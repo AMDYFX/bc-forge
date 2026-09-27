@@ -1,208 +1,157 @@
 #!/usr/bin/env python3
-"""Lint that public Soroban contract functions extend TTL and avoid unnecessary panics (#959).
+"""Lint public Soroban functions for TTL extension and avoidable panics (#959).
 
-Soroban contract entries expire if TTL is not bumped on access. State-changing
-public functions must call a TTL extension helper (e.g., `extend_instance_ttl` or
-`extend_storage_ttl_for_key`) or be documented in an allowlist. Additionally,
-public endpoints returning a `Result` should return contract error enums rather
-than raising unhandled panics.
+A public function in contracts/token and contracts/admin is state-changing when
+its body writes storage or calls another function in the same file that does.
+Each of those functions must either call a TTL helper
+(`extend_instance_ttl`, `extend_storage_ttl_for_key`, or the token wrapper
+`extend_instance_ttl_for_call`) or carry a source comment:
 
-Usage:
-    python3 scripts/check_soroban_ttl_and_panic.py
+    // ttl-allow: <why this function does not extend TTL itself>
+
+`panic!` in a public function that returns `Result` fails the check. Auth
+paths that use Soroban `require_auth` / `panic_with_error!` stay as they are
+when the function comment includes:
+
+    // panic-allow: <why this auth or host failure panics>
+
+Test modules are not linted. There is no Python allowlist.
 """
 
+from __future__ import annotations
+
 import pathlib
-import sys
 import re
+import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-
-# Crate targets to lint
 TARGET_FILES = [
     ROOT / "contracts" / "token" / "src" / "lib.rs",
     ROOT / "contracts" / "admin" / "src" / "lib.rs",
 ]
 
-# Allowlisted functions that do not directly call extend_ttl (e.g., view-only or delegated calls)
-# Function Name -> Reason
-ALLOWLIST = {
-    "admin": "Read-only getter for contract admin address",
-    "supply": "Read-only getter for total supply",
-    "get_max_supply": "Read-only getter for max supply",
-    "get_fee_config": "Read-only getter for fee configuration",
-    "get_treasury": "Read-only getter for treasury address",
-    "is_proposal_ready": "Read-only query for proposal status",
-    "get_nonce": "Read-only query for account nonce",
-    "get_role_admin": "Read-only role hierarchy query",
-    "get_role_member": "Read-only role member query",
-    "get_role_member_count": "Read-only role member count query",
-    "has_role": "Read-only role check function",
-    "is_admin": "Read-only admin check function",
-    "is_paused": "Read-only pause state check",
-    "decimals": "Read-only token metadata getter",
-    "name": "Read-only token name getter",
-    "symbol": "Read-only token symbol getter",
-    "allowance": "Read-only token allowance getter",
-    "balance": "Read-only account balance getter",
-    "has_admin": "Read-only check if contract admin exists",
-    "get_admin_pool": "Read-only query for admin pool addresses",
-    "get_threshold": "Read-only query for admin pool threshold",
-    "is_zero_address": "Pure address comparison utility",
-    "get_roles_bitmask": "Read-only roles bitmask calculation",
-    "mask_has_role": "Pure bitmask bitwise check",
-    "mask_with_role": "Pure bitmask calculation",
-    "mask_without_role": "Pure bitmask calculation",
-    "grant_role": "Delegates to persist_role_mask which extends storage TTL",
-    "grant_role_checked": "Delegates to persist_role_mask which extends storage TTL",
-    "revoke_role": "Delegates to persist_role_mask which extends storage TTL",
-    "set_admin": "Delegates to set_admin helper which extends instance TTL",
-    "init_storage": "Delegates to set_admin helper which extends instance TTL",
-    "init_storage_with_deployer": "Delegates to set_admin helper which extends instance TTL",
-    "migrate_admin": "Delegates to set_admin helper which extends instance TTL",
-    "set_admin_pool": "Delegates to admin pool handler which extends storage TTL",
-    "execute_upgrade": "Delegates to upgrade execution handler which extends instance TTL",
-    "execute_upgrade_batch": "Delegates to upgrade execution handler which extends instance TTL",
-    "submit_upgrade_proposal": "Delegates to proposal handler which extends storage TTL",
-    "emergency_execute_upgrade": "Delegates to upgrade execution handler which extends instance TTL",
-    "create_proposal": "Delegates to proposal creation handler which extends storage TTL",
-    "approve_proposal": "Delegates to proposal approval handler which extends storage TTL",
-    "mark_executed": "Delegates to proposal execution handler which extends storage TTL",
-    "cancel_legacy_proposal": "Delegates to proposal cancellation handler which extends storage TTL",
-    "approve_upgrade": "Delegates to upgrade approval handler which extends storage TTL",
-    "cancel_proposal": "Delegates to proposal cancellation handler which extends storage TTL",
-    "register_wasm_hash": "Delegates to WASM hash registration handler which extends storage TTL",
-    "get_proposal_unlock_time": "Read-only query for proposal unlock timestamp",
-    "require_role": "Auth/permission assertion check",
-    "require_role_guard": "Auth/permission assertion check",
-    "require_admin": "Auth assertion check for admin role",
-    "require_minter": "Auth assertion check for minter role",
-    "require_super_admin": "Auth assertion check for super admin role",
-    "require_deployer": "Auth assertion check for contract deployer",
-    "require_fee_admin": "Auth assertion check for fee admin role",
-    "require_pauser": "Auth assertion check for pauser role",
-    "is_admin_or_pauser": "Auth assertion check for admin or pauser role",
-    "require_timelock_expired": "Validation check for proposal timelock",
-    "require_upgrade_quorum_met": "Validation check for upgrade quorum",
-    "require_valid_wasm_hash": "Validation check for WASM code hash",
-    "require_non_zero_address": "Validation check rejecting zero address",
-    "validate_role_not_granted": "Validation check asserting role absence",
-}
-
-# Functions allowed to panic on auth/require_auth failures
-AUTH_PANIC_ALLOWLIST = {
-    "require_auth",
-    "require_auth_for_args",
-}
-
-TTL_PATTERNS = [
-    r'extend_instance_ttl',
-    r'extend_ttl',
-    r'extend_storage_ttl',
-    r'extend_storage_ttl_for_key',
-]
+TTL_RE = re.compile(
+    r"extend_instance_ttl|extend_storage_ttl_for_key|extend_storage_ttl\b|extend_ttl\b"
+)
+PANIC_RE = re.compile(r"\bpanic!\s*\(")
+FN_RE = re.compile(r"\bpub\s+fn\s+([A-Za-z0-9_]+)\b")
+WRITE_RE = re.compile(
+    r"\.set\s*\(|\.update\s*\(|\.remove\s*\(|\.set_temporary\s*\(|\.set_persistent\s*\("
+)
+RESULT_RE = re.compile(r"->\s*Result\s*<")
+TTL_ALLOW_RE = re.compile(r"ttl-allow:\s*\S+")
+PANIC_ALLOW_RE = re.compile(r"panic-allow:\s*\S+")
+CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 
 
-def extract_pub_functions(file_path: pathlib.Path) -> list[dict]:
-    content = file_path.read_text(encoding="utf-8")
-    lines = content.splitlines()
+def production_source(text: str) -> str:
+    """Drop `#[cfg(test)] mod ...` so unit-test helpers are not contract API."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("#[cfg(test)]") and index + 1 < len(lines):
+            if lines[index + 1].startswith("mod tests"):
+                return "\n".join(lines[:index])
+    return text
 
-    functions = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        # Match pub fn definition
-        match = re.search(r'pub\s+fn\s+([a-z0-9_]+)\s*\(', line, re.IGNORECASE)
-        if match and not line.strip().startswith("//"):
-            fn_name = match.group(1)
-            start_line = i + 1
 
-            # Read function signature & body block until closing brace balance
-            fn_body = []
-            brace_count = 0
-            found_start = False
-
-            while i < len(lines):
-                curr_line = lines[i]
-                fn_body.append(curr_line)
-                for char in curr_line:
-                    if char == '{':
-                        brace_count += 1
-                        found_start = True
-                    elif char == '}':
-                        brace_count -= 1
-                
-                if found_start and brace_count == 0:
-                    break
-                i += 1
-
-            body_str = "\n".join(fn_body)
-            returns_result = bool(re.search(r'->\s*Result\s*<', body_str))
-
-            functions.append({
-                "name": fn_name,
-                "file": file_path.relative_to(ROOT),
-                "line": start_line,
-                "body": body_str,
-                "returns_result": returns_result,
-            })
-        i += 1
-
+def extract_functions(text: str) -> list[dict]:
+    lines = text.splitlines()
+    functions: list[dict] = []
+    index = 0
+    while index < len(lines):
+        match = FN_RE.search(lines[index])
+        if not match or lines[index].lstrip().startswith("//"):
+            index += 1
+            continue
+        name = match.group(1)
+        start = index
+        body_lines = []
+        depth = 0
+        started = False
+        while index < len(lines):
+            body_lines.append(lines[index])
+            for char in lines[index]:
+                if char == "{":
+                    depth += 1
+                    started = True
+                elif char == "}":
+                    depth -= 1
+            if started and depth == 0:
+                break
+            index += 1
+        prelude = "\n".join(lines[max(0, start - 20) : start])
+        body = "\n".join(body_lines)
+        functions.append(
+            {
+                "name": name,
+                "line": start + 1,
+                "body": body,
+                "prelude": prelude,
+                "writes": bool(WRITE_RE.search(body)),
+                "returns_result": bool(RESULT_RE.search(body.split("{", 1)[0])),
+            }
+        )
+        index += 1
     return functions
 
 
-def lint_contract_files() -> bool:
-    all_passed = True
+def calls_writer(fn: dict, writers: set[str]) -> bool:
+    for name in CALL_RE.findall(fn["body"]):
+        if name != fn["name"] and name in writers:
+            return True
+    return False
 
-    for target in TARGET_FILES:
-        if not target.exists():
-            print(f"error: file not found {target}", file=sys.stderr)
-            all_passed = False
-            continue
 
-        functions = extract_pub_functions(target)
-        print(f"Linting {len(functions)} public functions in {target.relative_to(ROOT)}...")
-
-        for fn in functions:
-            fn_name = fn["name"]
-            body = fn["body"]
-
-            # 1. TTL Check for non-allowlisted functions
-            has_ttl_call = any(re.search(p, body) for p in TTL_PATTERNS)
-            if not has_ttl_call:
-                if fn_name not in ALLOWLIST:
-                    print(
-                        f"❌ FAIL [{fn['file']}:{fn['line']}] '{fn_name}' "
-                        f"does not call TTL helper (extend_instance_ttl) and is not in ALLOWLIST."
-                    )
-                    all_passed = False
-                else:
-                    print(f"  ✓ [{fn_name}] Allowlisted: {ALLOWLIST[fn_name]}")
-            else:
-                print(f"  ✓ [{fn_name}] Calls TTL extension helper")
-
-            # 2. Avoidable panic check for functions returning Result
-            if fn["returns_result"]:
-                panics = [
-                    m.start() for m in re.finditer(r'\bpanic!\s*\(', body)
-                    if not any(auth in body[max(0, m.start()-50):m.start()] for auth in AUTH_PANIC_ALLOWLIST)
-                ]
-                if panics:
-                    print(
-                        f"⚠️ WARNING [{fn['file']}:{fn['line']}] '{fn_name}' returns Result "
-                        f"but contains explicit panic! call. Consider returning contract error enum."
-                    )
-
-    return all_passed
+def lint_file(path: pathlib.Path) -> list[str]:
+    text = production_source(path.read_text(encoding="utf-8"))
+    functions = extract_functions(text)
+    writers = {fn["name"] for fn in functions if fn["writes"]}
+    failures: list[str] = []
+    rel = path.relative_to(ROOT)
+    for fn in functions:
+        state_changing = fn["writes"] or calls_writer(fn, writers)
+        has_ttl = bool(TTL_RE.search(fn["body"]))
+        ttl_allowed = bool(TTL_ALLOW_RE.search(fn["prelude"]))
+        if state_changing and not has_ttl and not ttl_allowed:
+            failures.append(
+                f"{rel}:{fn['line']}: '{fn['name']}' changes state without a TTL "
+                f"helper or a `ttl-allow:` comment"
+            )
+        if fn["returns_result"] and PANIC_RE.search(fn["body"]):
+            if not PANIC_ALLOW_RE.search(fn["prelude"] + "\n" + fn["body"]):
+                failures.append(
+                    f"{rel}:{fn['line']}: '{fn['name']}' returns Result but uses panic!; "
+                    f"return the contract error or add a `panic-allow:` comment"
+                )
+        auth_guard = fn["name"].startswith("require_") and (
+            "require_auth" in fn["body"]
+            or "panic_with_error!" in fn["body"]
+            or "require_role_guard" in fn["body"]
+            or "require_role(" in fn["body"]
+        )
+        if auth_guard and not PANIC_ALLOW_RE.search(fn["prelude"]):
+            failures.append(
+                f"{rel}:{fn['line']}: '{fn['name']}' is an auth-failure panic without a "
+                f"`panic-allow:` comment"
+            )
+    print(f"Linting {len(functions)} public functions in {rel}...")
+    return failures
 
 
 def main() -> int:
-    print("Running Soroban TTL & Panic Lint Check (#959)...")
-    success = lint_contract_files()
-    if not success:
-        print("\n❌ Soroban TTL lint checks failed. Please fix violations above.", file=sys.stderr)
+    print("Running Soroban TTL and panic lint (#959)...")
+    failures: list[str] = []
+    for target in TARGET_FILES:
+        if not target.exists():
+            print(f"error: missing {target}", file=sys.stderr)
+            return 1
+        failures.extend(lint_file(target))
+    if failures:
+        print("\nSoroban TTL / panic lint failed:", file=sys.stderr)
+        for failure in failures:
+            print(f"  {failure}", file=sys.stderr)
         return 1
-
-    print("\n✅ All public contract functions satisfy TTL extension and panic guidelines!")
+    print("Public token and admin functions satisfy the TTL and panic policy.")
     return 0
 
 

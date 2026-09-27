@@ -803,6 +803,7 @@ pub fn is_zero_address(env: &Env, address: &Address) -> bool {
 /// @dev Panics with `AdminError::InvalidAddress` when `address` is the zero address.
 /// @param env The Soroban environment.
 /// @param address The address to validate.
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_non_zero_address(env: &Env, address: &Address) {
     if is_zero_address(env, address) {
         soroban_sdk::panic_with_error!(env, AdminError::InvalidAddress);
@@ -1276,6 +1277,7 @@ pub fn has_role(env: &Env, role: Role, address: &Address) -> bool {
 /// @param role The role the address must hold.
 /// @param address The address to check and require authorization from.
 #[inline(always)]
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_role(env: &Env, role: Role, address: &Address) {
     require_valid_role(env, role);
     if !has_role(env, role, address) {
@@ -1306,6 +1308,7 @@ pub fn get_role_admin(env: &Env, role: Role) -> Address {
 /// @param role The role the address must hold.
 /// @param address The address to check and require authorization from.
 #[inline(always)]
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_role_guard(env: &Env, role: Role, address: &Address) {
     if !has_role(env, role, address) {
         soroban_sdk::panic_with_error!(env, AdminError::UnauthorizedRole);
@@ -1320,6 +1323,7 @@ pub fn require_role_guard(env: &Env, role: Role, address: &Address) {
 /// @param env The Soroban environment.
 /// @param address The address to check and require authorization from.
 #[inline(always)]
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_admin(env: &Env, address: &Address) {
     require_role_guard(env, Role::Admin, address);
 }
@@ -1331,6 +1335,7 @@ pub fn require_admin(env: &Env, address: &Address) {
 /// @param env The Soroban environment.
 /// @param address The address to check and require authorization from.
 #[inline(always)]
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_minter(env: &Env, address: &Address) {
     require_role_guard(env, Role::Minter, address);
 }
@@ -1342,6 +1347,7 @@ pub fn require_minter(env: &Env, address: &Address) {
 /// @param env The Soroban environment.
 /// @param address The address to check and require authorization from.
 #[inline(always)]
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_super_admin(env: &Env, address: &Address) {
     require_role_guard(env, SUPER_ADMIN_ROLE, address);
 }
@@ -1350,6 +1356,7 @@ pub fn require_super_admin(env: &Env, address: &Address) {
 ///
 /// Used to protect one-shot `init` entry points so a third party cannot
 /// initialize a freshly deployed contract as themselves.
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_deployer(env: &Env) {
     // Soroban SDK 22's Deployer has no require_auth(); the deploying
     // invocation is authorized as the current contract.
@@ -1362,6 +1369,7 @@ pub fn require_deployer(env: &Env) {
 /// @dev Fee administration is governed by the `Admin` role; thin wrapper around `require_role_guard`.
 /// @param env The Soroban environment.
 /// @param address The address to check and require authorization from.
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_fee_admin(env: &Env, address: &Address) {
     require_role_guard(env, Role::Admin, address);
 }
@@ -1373,6 +1381,7 @@ pub fn require_fee_admin(env: &Env, address: &Address) {
 /// @param env The Soroban environment.
 /// @param address The address to check and require authorization from.
 #[inline(always)]
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_pauser(env: &Env, address: &Address) {
     require_role_guard(env, Role::Pauser, address);
 }
