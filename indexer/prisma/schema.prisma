@@ -39,3 +39,9 @@ model LastIndexedLedger {
   id     Int @id @default(1)
   ledger Int
 }
+
+model Webhook {
+  id        String   @id @default(uuid())
+  url       String   @unique
+  createdAt DateTime @default(now())
+}
