@@ -159,6 +159,11 @@ export class bcForgeClient {
     this.walletAdapter = adapter;
   }
 
+  /** The wallet adapter configured on this client, if any. */
+  getWalletAdapter(): WalletAdapter | undefined {
+    return this.walletAdapter;
+  }
+
   /** Connect the configured wallet adapter (if any) */
   async connectWallet(): Promise<string | undefined> {
     if (!this.walletAdapter) throw new Error('No wallet adapter configured');

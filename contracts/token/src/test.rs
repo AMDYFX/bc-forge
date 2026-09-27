@@ -70,12 +70,16 @@ fn test_initialize_emits_expected_events() {
     let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
     assert_eq!(
         data_vec.len(),
-        3,
-        "data should have 3 elements (decimal, name, symbol), confirming admin is in topics"
+        4,
+        "data should have 4 elements (decimal, name, symbol, version), confirming admin is in topics"
     );
 
     let decimal: u32 = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(decimal, 7);
+
+    // #924 — every event data tuple ends with the schema version.
+    let version: u32 = data_vec.get(3).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(version, 1, "init event must carry schema version 1");
 }
 
 #[test]
@@ -1051,4 +1055,121 @@ fn test_execute_from_contract_admin_function_rejected_at_enum_level() {
     // Verify BatchOp count of enum variants is strictly limited to 2
     let ops = vec![&env, approve_op, transfer_op];
     assert_eq!(ops.len(), 2);
+}
+
+// ─── rescue_tokens (#921) ────────────────────────────────────────────────────
+
+#[test]
+fn test_rescue_tokens_admin_recovers_foreign_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin) = setup(&env);
+
+    // A foreign SEP-41 token gets registered and "accidentally" sent to the
+    // token contract. Minting it to the token contract's own address makes the
+    // contract hold a balance of a token it does not issue.
+    let foreign_id = env.register(BcForgeToken, ());
+    let foreign = BcForgeTokenClient::new(&env, &foreign_id);
+    let foreign_admin = Address::generate(&env);
+    foreign.initialize(
+        &foreign_admin,
+        &7,
+        &String::from_str(&env, "Foreign"),
+        &String::from_str(&env, "FRG"),
+    );
+    let recovery = Address::generate(&env);
+    foreign.mint(&foreign_admin, &client.address, &5_000);
+
+    assert_eq!(foreign.balance(&client.address), 5_000);
+
+    // Admin rescues the whole stranded balance to the recovery address.
+    client.rescue_tokens(&admin, &foreign_id, &recovery, &5_000);
+
+    assert_eq!(foreign.balance(&client.address), 0);
+    assert_eq!(foreign.balance(&recovery), 5_000);
+
+    // The token's own accounting is untouched: supply, balances, nothing moved.
+    assert_eq!(client.supply(), 0);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin) = setup(&env);
+
+    let foreign_id = env.register(BcForgeToken, ());
+    let foreign = BcForgeTokenClient::new(&env, &foreign_id);
+    let foreign_admin = Address::generate(&env);
+    foreign.initialize(
+        &foreign_admin,
+        &7,
+        &String::from_str(&env, "Foreign"),
+        &String::from_str(&env, "FRG"),
+    );
+    foreign.mint(&foreign_admin, &client.address, &5_000);
+
+    let stranger = Address::generate(&env);
+    let recovery = Address::generate(&env);
+
+    let result = client.try_rescue_tokens(&stranger, &foreign_id, &recovery, &5_000);
+    // The admin-crate UnauthorizedRole trap does not decode into TokenError,
+    // so only the error-ness is asserted here.
+    assert!(result.is_err());
+
+    // Nothing moved.
+    assert_eq!(foreign.balance(&client.address), 5_000);
+    assert_eq!(foreign.balance(&recovery), 0);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_own_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, contract_id) = setup_contract(&env);
+    let admin = init_default(&env, &client);
+
+    // Give the contract a balance of its own token so the case is realistic:
+    // this is exactly the user money the hatch must never be able to drain.
+    client.mint(&admin, &admin, &1_000);
+    client.transfer(&admin, &contract_id, &100);
+
+    let recovery = Address::generate(&env);
+    let result = client.try_rescue_tokens(&admin, &contract_id, &recovery, &100);
+    assert_eq!(result, Err(Ok(TokenError::UnknownToken)));
+
+    // The accounted balance is still there.
+    assert_eq!(client.balance(&contract_id), 100);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin) = setup(&env);
+
+    let foreign_id = env.register(BcForgeToken, ());
+    let foreign = BcForgeTokenClient::new(&env, &foreign_id);
+    let foreign_admin = Address::generate(&env);
+    foreign.initialize(
+        &foreign_admin,
+        &7,
+        &String::from_str(&env, "Foreign"),
+        &String::from_str(&env, "FRG"),
+    );
+    foreign.mint(&foreign_admin, &client.address, &5_000);
+
+    let recovery = Address::generate(&env);
+    let result = client.try_rescue_tokens(&admin, &foreign_id, &recovery, &0);
+    assert_eq!(result, Err(Ok(TokenError::InvalidAmount)));
+
+    // More than the contract holds reverts with InsufficientBalance.
+    let result = client.try_rescue_tokens(&admin, &foreign_id, &recovery, &6_000);
+    assert_eq!(result, Err(Ok(TokenError::InsufficientBalance)));
+
+    assert_eq!(foreign.balance(&recovery), 0);
 }

@@ -29,3 +29,21 @@ export const useBcForgeClient = () => {
   }
   return context.client;
 };
+
+export interface WalletState {
+  connected: boolean;
+  publicKey?: string;
+}
+
+/**
+ * Connection state of the wallet adapter on the SDK client in `BcForgeProvider`.
+ * Disconnected when there is no provider, no adapter, or the adapter is not connected.
+ */
+export function useWallet(): WalletState {
+  const { client } = useContext(bcForgeContext);
+  const adapter = client?.getWalletAdapter();
+  if (!adapter?.connected || !adapter.publicKey) {
+    return { connected: false };
+  }
+  return { connected: true, publicKey: adapter.publicKey };
+}

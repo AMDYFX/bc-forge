@@ -25,10 +25,22 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TARGET_FILES = [
-    ROOT / "contracts" / "token" / "src" / "lib.rs",
-    ROOT / "contracts" / "admin" / "src" / "lib.rs",
-]
+def is_production_source(path: pathlib.Path) -> bool:
+    if "tests" in path.parts:
+        return False
+    name = path.name
+    if name.startswith("test") or "proptest" in name or name.startswith("fuzz"):
+        return False
+    head = path.read_text(encoding="utf-8")[:200]
+    return "#! [cfg(test)]" not in head and "#![cfg(test)]" not in head
+
+
+TARGET_FILES = sorted(
+    path
+    for crate in ("token", "admin")
+    for path in (ROOT / "contracts" / crate / "src").rglob("*.rs")
+    if is_production_source(path)
+)
 
 TTL_RE = re.compile(
     r"extend_instance_ttl|extend_storage_ttl_for_key|extend_storage_ttl\b|extend_ttl\b"
