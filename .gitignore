@@ -40,3 +40,5 @@ Thumbs.db
 issue_pr.txt
 .opencode
 
+/target/
+**/target/

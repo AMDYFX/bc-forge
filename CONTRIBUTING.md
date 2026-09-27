@@ -158,6 +158,8 @@ cargo test --tests
 cd sdk && npm run build
 ```
 
+Running `cargo test -p bc-forge-admin` regenerates `contracts/admin/test_snapshots/` locally; these Soroban snapshots are generated outputs and must remain untracked.
+
 CI also runs `cargo audit` against `Cargo.lock` in the Dependency Audit job: if any dependency matches a known RustSec advisory, the check fails and blocks the merge. Upgrade the affected crate (or, only when the advisory genuinely cannot apply, add a narrowly scoped, commented ignore) before opening your PR.
 
 ### 5. Pull Request Process
@@ -198,6 +200,26 @@ CI also runs `cargo audit` against `Cargo.lock` in the Dependency Audit job: if 
 - **bcForgeClient** — The single entry point for all operations
 - **Read-only methods** — Use simulation (no transaction needed)
 - **Write methods** — Build, simulate, sign, submit, poll
+
+### Generated Contract Bindings (#926)
+
+The SDK includes auto-generated TypeScript bindings in `sdk/src/generated/`
+produced by `stellar contract bindings typescript`. These must be regenerated
+whenever the Rust token contract changes:
+
+```bash
+# From the sdk/ directory
+npm run generate:bindings
+
+# Or from the repo root
+bash scripts/generate-sdk-bindings.sh
+```
+
+**Prerequisites:** Rust toolchain with `wasm32-unknown-unknown` target and
+[Stellar CLI 22.0+](https://developers.stellar.org/docs/tools/cli).
+
+CI will fail if the committed bindings are stale. Always regenerate and commit
+after contract changes.
 
 ## ❓ Questions?
 

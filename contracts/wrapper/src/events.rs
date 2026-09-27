@@ -1,8 +1,24 @@
 //! # bc-forge Wrapper Events
 //!
 //! Structured event emission for all wrapper contract operations.
+//!
+//! # Event data layout & schema version (#924)
+//!
+//! The vault `deposit` and `withdraw` event data tuples **end with a
+//! `version: u32` field** (`EVENT_SCHEMA_VERSION`, currently `1`). Existing
+//! fields keep their order and meaning; the version is appended last so
+//! positional parsers of the previous layout keep working. Consumers must
+//! read the version from the last element before interpreting the data.
+//!
+//! Layout reference (v1):
+//! - `deposit`: `(caller, assets, shares, version)`
+//! - `withdrw`: `(caller, shares, underlying_amount, version)`
 
 use soroban_sdk::{symbol_short, Address, Env};
+
+/// Schema version appended to the vault `deposit` and `withdraw` event data
+/// tuples. Bump when their field layout changes (#924).
+pub const EVENT_SCHEMA_VERSION: u32 = 1;
 
 /// Emitted when the wrapper contract is initialized.
 pub fn emit_initialized(env: &Env, admin: &Address, token_contract_id: &Address) {
@@ -29,7 +45,7 @@ pub fn emit_wrap(env: &Env, caller: &Address, amount: i128, wrapped_amount: i128
 pub fn emit_deposit(env: &Env, caller: &Address, assets: i128, shares: i128) {
     env.events().publish(
         (symbol_short!("deposit"),),
-        (caller.clone(), assets, shares),
+        (caller.clone(), assets, shares, EVENT_SCHEMA_VERSION),
     );
 }
 
@@ -121,7 +137,12 @@ pub fn emit_vault_state_set(env: &Env, caller: &Address, state: &crate::VaultSta
 pub fn emit_withdraw(env: &Env, caller: &Address, shares: i128, underlying_amount: i128) {
     env.events().publish(
         (symbol_short!("withdrw"),),
-        (caller.clone(), shares, underlying_amount),
+        (
+            caller.clone(),
+            shares,
+            underlying_amount,
+            EVENT_SCHEMA_VERSION,
+        ),
     );
 }
 
@@ -150,4 +171,33 @@ pub fn emit_unlock_time_set(env: &Env, caller: &Address, user: &Address, unlock_
 pub fn emit_unlock_time_cleared(env: &Env, caller: &Address, user: &Address) {
     env.events()
         .publish((symbol_short!("unlock"),), (caller.clone(), user.clone()));
+}
+
+/// Emitted when the admin rescues a foreign token balance out of the vault via
+/// [`crate::WrapperContract::rescue_tokens`].
+pub fn emit_rescued(env: &Env, caller: &Address, token: &Address, to: &Address, amount: i128) {
+    env.events().publish(
+        (symbol_short!("rescue"),),
+        (caller.clone(), token.clone(), to.clone(), amount),
+    );
+}
+
+/// Emitted when withdrawal cooldown configuration is set or updated.
+pub fn emit_cooldown_config_set(env: &Env, admin: &Address, config: &crate::CooldownConfig) {
+    env.events()
+        .publish((symbol_short!("c_cfg"),), (admin.clone(), config.clone()));
+}
+
+/// Emitted when a withdrawal is queued in cooldown mode.
+pub fn emit_withdraw_queued(
+    env: &Env,
+    caller: &Address,
+    shares: i128,
+    amount: i128,
+    release_ledger: u32,
+) {
+    env.events().publish(
+        (symbol_short!("w_queued"),),
+        (caller.clone(), shares, amount, release_ledger),
+    );
 }

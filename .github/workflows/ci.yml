@@ -18,6 +18,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Ensure admin test snapshots are untracked
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked_snapshots="$(git ls-files -- 'contracts/admin/test_snapshots/')"
+          if [[ -n "$tracked_snapshots" ]]; then
+            echo "::error::Files under contracts/admin/test_snapshots/ must not be tracked"
+            printf '%s\n' "$tracked_snapshots"
+            exit 1
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -66,6 +78,10 @@ jobs:
       - name: Check WASM size budgets (#956)
         run: python3 scripts/check_wasm_size.py
 
+      - name: Publish gas benchmarks summary (#961)
+        if: always()
+        run: cargo test -p bc-forge-admin gas_bench -- --nocapture | python3 scripts/parse_gas_bench.py >> $GITHUB_STEP_SUMMARY
+
   # ─── TypeScript SDK CI ──────────────────────────────────────────────────
   sdk:
     name: TypeScript SDK
@@ -93,6 +109,59 @@ jobs:
       - name: Run tests
         run: npm test
 
+  # ─── SDK Bindings Staleness Check (#926) ─────────────────────────────────
+  # Ensures the committed generated bindings match a fresh run of
+  # `stellar contract bindings typescript` against the latest WASM.
+  sdk-bindings:
+    name: SDK Bindings Staleness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          targets: wasm32-unknown-unknown
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: bc-forge-contracts
+
+      - name: Install Stellar CLI system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libudev-dev \
+            pkg-config
+
+      - name: Install Stellar CLI
+        run: cargo install stellar-cli --locked || cargo install soroban-cli --locked
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: sdk/package-lock.json
+
+      - name: Install SDK dependencies
+        run: npm ci
+        working-directory: sdk
+
+      - name: Generate bindings from fresh WASM
+        run: bash scripts/generate-sdk-bindings.sh
+
+      - name: Fail if committed bindings are stale
+        run: |
+          if ! git diff --exit-code sdk/src/generated/; then
+            echo "::error::SDK bindings are stale. Run 'npm run generate:bindings' in sdk/ and commit the result."
+            exit 1
+          fi
+
   # ─── Indexer CI ─────────────────────────────────────────────────────────
   indexer:
     name: Indexer
@@ -116,6 +185,9 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Run indexer API load test (#961)
+        run: npm run load-test
 
   # ─── TypeScript CLI CI ──────────────────────────────────────────────────
   cli:
@@ -206,12 +278,26 @@ jobs:
       - name: Resolve full dependency graph with all features
         run: cargo tree --workspace --all-features >/dev/null
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+      - name: Install cargo-audit and cargo-deny
+        run: cargo install cargo-audit cargo-deny --locked
 
       # Fails the job when any crate in Cargo.lock matches a RustSec advisory.
       - name: Audit Cargo.lock against RustSec advisories (#883)
         run: cargo audit
+
+      # Fails the job on security advisories via cargo-deny (#958)
+      - name: Check Cargo advisories with cargo-deny (#958)
+        run: cargo deny check advisories
+
+      # Fails the job on high or critical production vulnerability findings (#958)
+      - name: Run npm audit gate on workspace packages (#958)
+        run: |
+          for pkg in sdk cli react indexer; do
+            if [ -d "$pkg" ]; then
+              echo "Auditing npm production dependencies in $pkg..."
+              (cd "$pkg" && npm audit --omit=dev --audit-level=high)
+            fi
+          done
 
   # ─── Documentation link check (#348) ─────────────────────────────────────
   docs-links:

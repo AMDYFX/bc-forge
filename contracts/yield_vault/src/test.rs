@@ -3,9 +3,9 @@
 //! Covers issues #732 (rate-limit deposits), #733 (pause vault deposits),
 //! #734 (rescue stuck funds), and #735 (deposit-to-mint ratio).
 
-use crate::{VaultError, YieldVaultContract, YieldVaultContractClient};
+use crate::{CooldownConfig, VaultError, YieldVaultContract, YieldVaultContractClient};
 use bc_forge_token::{BcForgeToken, BcForgeTokenClient};
-use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Address, Env, String};
 
 // ─── Test helpers ────────────────────────────────────────────────────────────
@@ -715,3 +715,104 @@ fn test_withdraw_returns_proportional_tokens() {
     assert_eq!(vault.supply(), 3_000_000);
     assert_eq!(vault.total_assets(), 3_000_000);
 }
+
+// ─── Cooldown and Emergency Cap Tests ───────────────────────────────────────
+
+#[test]
+fn test_cooldown_off_preserves_immediate_withdrawals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (vault, underlying, _admin, user, _vault_id) = setup_and_fund(&env);
+
+    // Initial deposit: 1,000,000 assets -> 1,000,000 shares
+    vault.deposit(&user, &1_000_000, &0);
+    assert_eq!(vault.share_balance(&user), 1_000_000);
+
+    // Cooldown is OFF by default. Withdrawal pays out immediately.
+    let tokens_out = vault.withdraw(&user, &1_000_000, &0);
+    assert_eq!(tokens_out, 1_000_000);
+    assert_eq!(vault.share_balance(&user), 0);
+    assert_eq!(vault.supply(), 0);
+    assert_eq!(underlying.balance(&user), 10_000_000);
+}
+
+#[test]
+fn test_cooldown_on_delays_payout_until_release_ledger() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (vault, underlying, admin, user, _vault_id) = setup_and_fund(&env);
+
+    // Enable cooldown mode with 10 ledgers delay
+    let config = CooldownConfig {
+        enabled: true,
+        cooldown_ledgers: 10,
+        emergency_cap: 0,
+        emergency_window_ledgers: 0,
+    };
+    vault.set_cooldown_config(&admin, &config);
+
+    vault.deposit(&user, &1_000_000, &0);
+
+    // First call to withdraw in cooldown mode queues the withdrawal (returns 0 tokens immediately)
+    let res = vault.withdraw(&user, &1_000_000, &0);
+    assert_eq!(res, 0);
+
+    // Shares are burned immediately upon queueing
+    assert_eq!(vault.share_balance(&user), 0);
+    // User has not received underlying tokens yet
+    assert_eq!(underlying.balance(&user), 9_000_000);
+
+    let queued = vault.get_queued_withdrawal(&user).unwrap();
+    assert_eq!(queued.amount, 1_000_000);
+    assert_eq!(queued.release_ledger, env.ledger().sequence() + 10);
+
+    // Claiming too early (before release ledger) fails
+    let claim_early = vault.try_claim_withdrawal(&user);
+    assert_eq!(claim_early, Err(Ok(VaultError::CooldownNotMet)));
+
+    // Advance ledger sequence past the release ledger
+    env.ledger().set_sequence_number(queued.release_ledger + 1);
+
+    // Successful claim after cooldown
+    let claimed_tokens = vault.claim_withdrawal(&user);
+    assert_eq!(claimed_tokens, 1_000_000);
+    assert_eq!(underlying.balance(&user), 10_000_000);
+
+    // Double claim fails
+    let claim_again = vault.try_claim_withdrawal(&user);
+    assert_eq!(claim_again, Err(Ok(VaultError::NoQueuedWithdrawal)));
+}
+
+#[test]
+fn test_emergency_cap_blocks_excessive_withdrawals_in_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (vault, _underlying, admin, user, _vault_id) = setup_and_fund(&env);
+
+    // Configure emergency cap of 500,000 per 100-ledger window
+    let config = CooldownConfig {
+        enabled: false,
+        cooldown_ledgers: 0,
+        emergency_cap: 500_000,
+        emergency_window_ledgers: 100,
+    };
+    vault.set_cooldown_config(&admin, &config);
+
+    vault.deposit(&user, &1_000_000, &0);
+
+    // First withdrawal of 400,000 succeeds
+    let first = vault.withdraw(&user, &400_000, &0);
+    assert_eq!(first, 400_000);
+
+    // Second withdrawal of 200,000 within same window exceeds cap (400k + 200k > 500k)
+    let second = vault.try_withdraw(&user, &200_000, &0);
+    assert_eq!(second, Err(Ok(VaultError::EmergencyCapExceeded)));
+
+    // Advance ledger past window
+    env.ledger().set_sequence_number(env.ledger().sequence() + 105);
+
+    // Window reset: withdrawal of 200,000 succeeds now
+    let third = vault.withdraw(&user, &200_000, &0);
+    assert_eq!(third, 200_000);
+}
+
