@@ -176,6 +176,8 @@ pub enum TokenError {
     /// contract can never rescue itself: its balances are accounted user
     /// funds, not stranded foreign assets.
     UnknownToken = 17,
+    /// Metadata would change `decimals` after initialization (issue #911).
+    DecimalsImmutable = 18,
 }
 
 #[contract]
@@ -1344,5 +1346,139 @@ impl TokenInterface for BcForgeToken {
             .instance()
             .get(&DataKey::Symbol)
             .unwrap_or_else(|| String::from_str(&env, "SFG"))
+    }
+}
+
+#[contractimpl]
+impl BcForgeToken {
+    // ─── Metadata updates (#911) ───────────────────────────────────────────
+
+    /// Reads the stored token name, defaulting to "bc-forge" when unset.
+    fn read_stored_name(env: &Env) -> String {
+        env.storage()
+            .instance()
+            .get(&DataKey::Name)
+            .unwrap_or_else(|| String::from_str(env, "bc-forge"))
+    }
+
+    /// Reads the stored token symbol, defaulting to "SFG" when unset.
+    fn read_stored_symbol(env: &Env) -> String {
+        env.storage()
+            .instance()
+            .get(&DataKey::Symbol)
+            .unwrap_or_else(|| String::from_str(env, "SFG"))
+    }
+
+    /// Updates the token name after initialization.
+    ///
+    /// @notice Stores `new_name` in instance storage and emits `upd_name` with
+    ///         the admin, old name, and new name (spec: metadata-update-functions
+    ///         requirements 1.1-1.7). Empty strings are accepted; the contract
+    ///         must be initialized or `TokenError::NotInitialized` is returned;
+    ///         pause state does not affect the update.
+    /// @param env The Soroban environment.
+    /// @param new_name The new token name (may be empty; stored verbatim).
+    /// @return `Ok(())` on success, or `TokenError::NotInitialized` if the
+    ///         contract has not been initialized. Panics if the stored admin
+    ///         does not authorize the invocation.
+    pub fn update_name(env: Env, new_name: String) -> Result<(), TokenError> {
+        Self::ensure_initialized(&env)?;
+        let admin_address = admin::get_admin(&env);
+        admin::require_admin(&env, &admin_address);
+        let old_name = Self::read_stored_name(&env);
+        env.storage().instance().set(&DataKey::Name, &new_name);
+        ttl::extend_instance_ttl(&env);
+        events::emit_update_name(&env, &admin_address, &old_name, &new_name);
+        Ok(())
+    }
+
+    /// Updates the token symbol after initialization.
+    ///
+    /// @notice Stores `new_symbol` in instance storage and emits `upd_sym` with
+    ///         the admin, old symbol, and new symbol (spec: metadata-update-functions
+    ///         requirements 2.1-2.7). Empty strings are accepted; the contract
+    ///         must be initialized or `TokenError::NotInitialized` is returned;
+    ///         pause state does not affect the update.
+    /// @param env The Soroban environment.
+    /// @param new_symbol The new token symbol (may be empty; stored verbatim).
+    /// @return `Ok(())` on success, or `TokenError::NotInitialized` if the
+    ///         contract has not been initialized. Panics if the stored admin
+    ///         does not authorize the invocation.
+    pub fn update_symbol(env: Env, new_symbol: String) -> Result<(), TokenError> {
+        Self::ensure_initialized(&env)?;
+        let admin_address = admin::get_admin(&env);
+        admin::require_admin(&env, &admin_address);
+        let old_symbol = Self::read_stored_symbol(&env);
+        env.storage().instance().set(&DataKey::Symbol, &new_symbol);
+        ttl::extend_instance_ttl(&env);
+        events::emit_update_symbol(&env, &admin_address, &old_symbol, &new_symbol);
+        Ok(())
+    }
+
+    /// Sets name, symbol, and decimals with an immutability guard (#911).
+    ///
+    /// @notice Admin-only full-metadata setter. After initialization the
+    ///         `decimals` scale is fixed because holders and the SDK assume a
+    ///         fixed scale, so any attempt to supply a `decimals` value that
+    ///         differs from the stored one is rejected with
+    ///         `TokenError::DecimalsImmutable`. Name and symbol are stored
+    ///         verbatim and an `upd_meta` event is emitted with the new values.
+    /// @param env The Soroban environment.
+    /// @param caller The address calling this function (must have Admin role).
+    /// @param name The new token name.
+    /// @param symbol The new token symbol.
+    /// @param decimals The requested decimal places; must equal the stored value.
+    /// @return `Ok(())` on success, `TokenError::NotInitialized` if the contract
+    ///         is uninitialized, or `TokenError::DecimalsImmutable` if `decimals`
+    ///         would change the initialized scale.
+    pub fn set_metadata(
+        env: Env,
+        caller: Address,
+        name: String,
+        symbol: String,
+        decimals: u32,
+    ) -> Result<(), TokenError> {
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+        let stored_decimals: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Decimals)
+            .unwrap_or(7);
+        if decimals != stored_decimals {
+            return Err(TokenError::DecimalsImmutable);
+        }
+        env.storage().instance().set(&DataKey::Name, &name);
+        env.storage().instance().set(&DataKey::Symbol, &symbol);
+        ttl::extend_instance_ttl(&env);
+        events::emit_metadata_updated(&env, &caller, &name, &symbol);
+        Ok(())
+    }
+
+    /// Updates name and symbol together (#911).
+    ///
+    /// @notice Admin-only metadata updater that changes name and symbol in one
+    ///         call. `decimals` is not a parameter, so the initialized scale
+    ///         cannot change through this entry point. Emits `upd_meta` with
+    ///         the caller, new name, and new symbol.
+    /// @param env The Soroban environment.
+    /// @param caller The address calling this function (must have Admin role).
+    /// @param name The new token name.
+    /// @param symbol The new token symbol.
+    /// @return `Ok(())` on success, or `TokenError::NotInitialized` if the
+    ///         contract has not been initialized.
+    pub fn update_metadata(
+        env: Env,
+        caller: Address,
+        name: String,
+        symbol: String,
+    ) -> Result<(), TokenError> {
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+        env.storage().instance().set(&DataKey::Name, &name);
+        env.storage().instance().set(&DataKey::Symbol, &symbol);
+        ttl::extend_instance_ttl(&env);
+        events::emit_metadata_updated(&env, &caller, &name, &symbol);
+        Ok(())
     }
 }

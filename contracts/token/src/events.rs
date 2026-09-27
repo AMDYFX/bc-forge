@@ -320,6 +320,51 @@ pub fn emit_fee_exemption_removed(env: &Env, caller: &Address, address: &Address
     );
 }
 
+/// Emits the `upd_name` event when the token name is updated.
+///
+/// @notice Publishes name update event data including the admin address, the old name, and the new name.
+/// @dev The event topics include the `upd_name` symbol and the admin address (spec: metadata-update-functions, req 4.1).
+/// @param env The Soroban environment.
+/// @param admin The admin address that authorized the update.
+/// @param old_name The previous token name.
+/// @param new_name The new token name.
+pub fn emit_update_name(env: &Env, admin: &Address, old_name: &String, new_name: &String) {
+    env.events().publish(
+        (symbol_short!("upd_name"), admin.clone()),
+        (old_name.clone(), new_name.clone()),
+    );
+}
+
+/// Emits the `upd_sym` event when the token symbol is updated.
+///
+/// @notice Publishes symbol update event data including the admin address, the old symbol, and the new symbol.
+/// @dev The event topics include the `upd_sym` symbol and the admin address (spec: metadata-update-functions, req 4.2).
+/// @param env The Soroban environment.
+/// @param admin The admin address that authorized the update.
+/// @param old_symbol The previous token symbol.
+/// @param new_symbol The new token symbol.
+pub fn emit_update_symbol(env: &Env, admin: &Address, old_symbol: &String, new_symbol: &String) {
+    env.events().publish(
+        (symbol_short!("upd_sym"), admin.clone()),
+        (old_symbol.clone(), new_symbol.clone()),
+    );
+}
+
+/// Emits the `upd_meta` event when `set_metadata` or `update_metadata` succeeds.
+///
+/// @notice Publishes metadata update event data including the caller, the new name, and the new symbol.
+/// @dev The event topics include the `upd_meta` symbol and the caller address (issue #911, instruction 4).
+/// @param env The Soroban environment.
+/// @param caller The address that authorized the metadata update.
+/// @param name The new token name.
+/// @param symbol The new token symbol.
+pub fn emit_metadata_updated(env: &Env, caller: &Address, name: &String, symbol: &String) {
+    env.events().publish(
+        (symbol_short!("upd_meta"), caller.clone()),
+        (name.clone(), symbol.clone()),
+    );
+}
+
 /// Emits the `exec_btch` event when a batch of operations is executed via `execute_from_contract`.
 ///
 /// @notice Publishes batch execution event data including caller address and count of executed operations.

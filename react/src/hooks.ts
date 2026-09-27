@@ -3,6 +3,15 @@ import { useBcForgeClient } from './context';
 import { Keypair } from '@stellar/stellar-sdk';
 
 /**
+ * Hook to read the connected wallet state: adapter name, public key,
+ * connection status, and connect/disconnect actions (#902). Transactions
+ * submitted while connected are signed by the adapter, so no `Keypair` is
+ * required. Defined in `./context`; re-exported here alongside the write
+ * hooks.
+ */
+export { useWallet } from './context';
+
+/**
  * Hook to fetch basic token information (name, symbol, decimals).
  */
 export function useBcForgeToken() {
@@ -64,13 +73,16 @@ export function useBalance(address: string | undefined) {
 
 /**
  * Hook to perform mint operations.
+ *
+ * `source` is optional: when omitted, the connected wallet adapter signs the
+ * transaction and the connected account is the transaction source (#902).
  */
 export function useMint() {
   const client = useBcForgeClient();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  const mint = useCallback(async (to: string, amount: bigint, source: Keypair) => {
+  const mint = useCallback(async (to: string, amount: bigint, source?: Keypair) => {
     try {
       setLoading(true);
       setError(null);
@@ -118,6 +130,9 @@ export function useTotalSupply() {
 
 /**
  * Hook to perform transfer operations.
+ *
+ * `source` is optional: when omitted, the connected wallet adapter signs the
+ * transaction and the connected account is the transaction source (#902).
  */
 export function useTransfer() {
   const client = useBcForgeClient();
@@ -170,6 +185,9 @@ export function useApprove() {
 
 /**
  * Hook to perform burn operations.
+ *
+ * `source` is optional: when omitted, the connected wallet adapter signs the
+ * transaction and the connected account is the transaction source (#902).
  */
 export function useBurn() {
   const client = useBcForgeClient();
