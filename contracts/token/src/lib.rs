@@ -493,6 +493,7 @@ impl BcForgeToken {
         name: String,
         symbol: String,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         // Ensure only the deployer can initialize the contract
         env.current_contract_address().require_auth();
 
@@ -531,6 +532,7 @@ impl BcForgeToken {
     /// @param amount The amount of tokens to mint.
     /// @return `Ok(())` on success, or an error if the minter is unauthorized, the contract is paused, or the amount is invalid.
     pub fn mint(env: Env, minter: Address, to: Address, amount: i128) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         if amount <= 0 {
             return Err(TokenError::InvalidAmount);
         }
@@ -560,6 +562,7 @@ impl BcForgeToken {
         minter: Address,
         recipients: Vec<Recipient>,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         reentrancy_guard!(&env, "batch_mint_guard", {
             Self::ensure_initialized(&env)?;
             Self::ensure_not_paused(&env)?;
@@ -664,6 +667,7 @@ impl BcForgeToken {
     /// @param max_supply The new maximum supply cap.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized or the value is negative.
     pub fn set_max_supply(env: Env, caller: Address, max_supply: i128) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         if max_supply < 0 {
             return Err(TokenError::InvalidAmount);
@@ -681,6 +685,7 @@ impl BcForgeToken {
     /// @param new_admin The address to become the new admin.
     /// @return `Ok(())` on success, or an error if the caller is not the current admin.
     pub fn transfer_ownership(env: Env, new_admin: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         let current_admin = admin::get_admin(&env);
         admin::require_admin(&env, &current_admin);
@@ -759,6 +764,7 @@ impl BcForgeToken {
     /// @param caller The address requesting the pause; must be admin or hold the Pauser role.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized or already paused.
     pub fn pause(env: Env, caller: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
 
         // #769: role-based check instead of the legacy address-equality
@@ -786,6 +792,7 @@ impl BcForgeToken {
     /// @param caller The address requesting the unpause; must be admin or hold the Pauser role.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized or not paused.
     pub fn unpause(env: Env, caller: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
 
         // #769: role-based check, mirroring `pause` — admin or Pauser role.
@@ -816,6 +823,7 @@ impl BcForgeToken {
         upgrader: Address,
         new_wasm_hash: BytesN<32>,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_super_admin(&env, &upgrader);
         events::emit_upgraded(&env, &upgrader, &new_wasm_hash);
@@ -830,6 +838,7 @@ impl BcForgeToken {
     /// @param caller The address requesting the pause.
     /// @return `Ok(())` on success.
     pub fn pause_as(env: Env, caller: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         if bc_forge_lifecycle::is_paused(&env) {
             return Err(TokenError::AlreadyPaused);
@@ -846,6 +855,7 @@ impl BcForgeToken {
     /// @param caller The address requesting the unpause.
     /// @return `Ok(())` on success.
     pub fn unpause_as(env: Env, caller: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         if !bc_forge_lifecycle::is_paused(&env) {
             return Err(TokenError::NotPaused);
@@ -864,6 +874,7 @@ impl BcForgeToken {
     /// @param config The fee configuration to set.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized or the config contains negative values.
     pub fn set_fee_config(env: Env, caller: Address, config: FeeConfig) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_admin(&env, &caller);
         if config.base_fee < 0 || config.max_fee < 0 {
@@ -892,6 +903,7 @@ impl BcForgeToken {
     /// @param treasury The address to set as the treasury.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized.
     pub fn set_treasury(env: Env, caller: Address, treasury: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_admin(&env, &caller);
         Self::write_treasury(&env, &treasury);
@@ -923,6 +935,7 @@ impl BcForgeToken {
         address: Address,
         exemption: FeeExemption,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_admin(&env, &caller);
         Self::write_fee_exemption(&env, &address, &exemption);
@@ -942,6 +955,7 @@ impl BcForgeToken {
         caller: Address,
         address: Address,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_admin(&env, &caller);
         Self::delete_fee_exemption(&env, &address);

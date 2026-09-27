@@ -82,6 +82,7 @@ pub fn is_zero_address(env: &Env, address: &Address) -> bool {
 /// @dev Panics with `AdminError::InvalidAddress` when `address` is the zero address.
 /// @param env The Soroban environment.
 /// @param address The address to validate.
+// panic-allow: auth failure uses require_auth or panic_with_error
 pub fn require_non_zero_address(env: &Env, address: &Address) {
     if is_zero_address(env, address) {
         soroban_sdk::panic_with_error!(env, AdminError::InvalidAddress);

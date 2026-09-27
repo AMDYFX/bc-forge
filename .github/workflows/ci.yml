@@ -54,6 +54,9 @@ jobs:
       - name: Check for circular crate dependencies (#770)
         run: python3 scripts/check_crate_cycles.py
 
+      - name: Lint Soroban public functions for TTL extension and panic guidelines (#959)
+        run: python3 scripts/check_soroban_ttl_and_panic.py
+
       - name: Run multi-sig tests
         if: github.event_name == 'pull_request'
         run: cargo test -p bc-forge-admin
