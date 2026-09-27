@@ -394,6 +394,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "schedule_id"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "start_ledger"
                       },
                       "val": {
