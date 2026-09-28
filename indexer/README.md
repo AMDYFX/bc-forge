@@ -3,9 +3,9 @@
 ## API authentication
 
 The indexer read API (`/api/v1/mints`, `/api/v1/transfers`, `/api/v1/burns`,
-`/api/v1/stats`) is protected by a shared secret. Set it in the environment
-(dotenv loads `.env` automatically) and send it on every request as a bearer
-token:
+`/api/v1/holders`, `/api/v1/supply-history`, `/api/v1/stats`) is protected by a
+shared secret. Set it in the environment (dotenv loads `.env` automatically)
+and send it on every request as a bearer token:
 
 ```bash
 # .env
@@ -20,6 +20,14 @@ Requests with a missing or incorrect token receive HTTP `401` with
 `{ "error": "Unauthorized" }`. The token value is never logged. `GET /health`
 is registered outside the authenticated router and stays public so uptime
 probes keep working.
+
+## Holder & supply aggregates
+
+`GET /api/v1/holders` returns the current token holders with their balances,
+derived from the indexed mint, transfer, and burn events at ingestion time.
+`GET /api/v1/supply-history` returns timestamped supply points, one per
+supply-changing event. Both use the same cursor pagination (`limit`, `cursor`)
+and optional `from_ledger` filtering as the event-list routes.
 
 ## Health/readiness probe
 
