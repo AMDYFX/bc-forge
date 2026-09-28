@@ -6,6 +6,7 @@ import {
   AlbedoAdapter,
 } from '@bc-forge/sdk';
 import type { WalletAdapter } from '@bc-forge/sdk';
+import { truncateMiddle } from './utils';
 
 interface bcForgeContextType {
   client: bcForgeClient | null;
@@ -36,6 +37,17 @@ export const useBcForgeClient = () => {
   return context.client;
 };
 
+/**
+ * The {@link bcForgeClient} from the nearest {@link BcForgeProvider}, or `null`
+ * when no provider is mounted.
+ *
+ * Unlike {@link useBcForgeClient} this never throws, so the product components
+ * can be rendered standalone: they fall back to their own props instead of
+ * requiring a provider just to render.
+ */
+export const useOptionalBcForgeClient = (): bcForgeClient | null =>
+  useContext(bcForgeContext).client;
+
 // ─── Wallet connection (#902) ───────────────────────────────────────────────
 
 /** Wallets offered by {@link WalletProvider}'s `connect`. */
@@ -43,8 +55,7 @@ export type WalletName = 'freighter' | 'albedo';
 
 /** Truncates a Stellar public key for display: `GABC…WXYZ`. */
 export function truncatePublicKey(publicKey: string): string {
-  if (publicKey.length <= 10) return publicKey;
-  return `${publicKey.slice(0, 4)}…${publicKey.slice(-4)}`;
+  return truncateMiddle(publicKey);
 }
 
 interface WalletContextType {

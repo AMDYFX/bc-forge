@@ -27,7 +27,7 @@ import {
   simulateTransaction,
 } from './utils';
 
-import { SimulationError, RPCError } from './errors';
+import { SimulationError, RPCError, SignerRequiredError } from './errors';
 import type { TransactionResult } from './client';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -60,6 +60,16 @@ export class VaultClient {
     this.server = new SorobanRpc.Server(this.rpcUrl);
     this.contract = new Contract(this.contractId);
     this.walletAdapter = config.walletAdapter;
+  }
+
+  /** Replace or set the wallet adapter at runtime. */
+  setWalletAdapter(adapter?: WalletAdapter) {
+    this.walletAdapter = adapter;
+  }
+
+  /** The wallet adapter configured on this client, if any. */
+  getWalletAdapter(): WalletAdapter | undefined {
+    return this.walletAdapter;
   }
 
   // ─── Read-Only Queries ───────────────────────────────────────────────────
@@ -178,13 +188,14 @@ export class VaultClient {
    *
    * @param caller       - Depositor address
    * @param amount       - Amount of underlying tokens to deposit
-   * @param source       - Depositor keypair (or signer)
+   * @param source       - Depositor keypair. When omitted the configured
+   *   {@link WalletAdapter} signs and the caller is the transaction source.
    * @param minSharesOut - Optional minimum shares to receive (slippage protection)
    */
   async deposit(
     caller: string,
     amount: bigint,
-    source: Keypair,
+    source?: Keypair,
     minSharesOut?: bigint,
   ): Promise<TransactionResult> {
     const args =
@@ -199,13 +210,14 @@ export class VaultClient {
    *
    * @param caller       - Withdrawer address
    * @param shares       - Amount of vault shares to burn
-   * @param source       - Withdrawer keypair (or signer)
+   * @param source       - Withdrawer keypair. When omitted the configured
+   *   {@link WalletAdapter} signs and the caller is the transaction source.
    * @param minTokensOut - Optional minimum tokens to receive (slippage protection)
    */
   async withdraw(
     caller: string,
     shares: bigint,
-    source: Keypair,
+    source?: Keypair,
     minTokensOut?: bigint,
   ): Promise<TransactionResult> {
     const args =
@@ -219,16 +231,16 @@ export class VaultClient {
    * Compound pending protocol fees into the vault's total assets.
    *
    * @param caller - Address executing the compound operation
-   * @param source - Caller's keypair
+   * @param source - Caller's keypair, or omit to use the wallet adapter
    */
-  async compound(caller: string, source: Keypair): Promise<TransactionResult> {
+  async compound(caller: string, source?: Keypair): Promise<TransactionResult> {
     return this.invokeContract('compound_fees', [addressToScVal(caller)], source);
   }
 
   /**
    * Compound pending fees alias for compound_fees.
    */
-  async compoundFees(caller: string, source: Keypair): Promise<TransactionResult> {
+  async compoundFees(caller: string, source?: Keypair): Promise<TransactionResult> {
     return this.compound(caller, source);
   }
 
@@ -237,12 +249,12 @@ export class VaultClient {
    *
    * @param caller - Reward provider address
    * @param amount - Amount of underlying tokens to distribute
-   * @param source - Caller keypair
+   * @param source - Caller keypair, or omit to use the wallet adapter
    */
   async distributeRewards(
     caller: string,
     amount: bigint,
-    source: Keypair,
+    source?: Keypair,
   ): Promise<TransactionResult> {
     return this.invokeContract(
       'distribute_rewards',
@@ -254,14 +266,14 @@ export class VaultClient {
   /**
    * Wrap underlying tokens into vault shares (1:1 standard wrapper entrypoint).
    */
-  async wrap(caller: string, amount: bigint, source: Keypair): Promise<TransactionResult> {
+  async wrap(caller: string, amount: bigint, source?: Keypair): Promise<TransactionResult> {
     return this.invokeContract('wrap', [addressToScVal(caller), i128ToScVal(amount)], source);
   }
 
   /**
    * Unwrap vault shares back to underlying tokens (1:1 standard wrapper exitpoint).
    */
-  async unwrap(caller: string, wrappedAmount: bigint, source: Keypair): Promise<TransactionResult> {
+  async unwrap(caller: string, wrappedAmount: bigint, source?: Keypair): Promise<TransactionResult> {
     return this.invokeContract(
       'unwrap',
       [addressToScVal(caller), i128ToScVal(wrappedAmount)],
@@ -276,7 +288,7 @@ export class VaultClient {
     caller: string,
     user: string,
     unlockTimestamp: bigint,
-    source: Keypair,
+    source?: Keypair,
   ): Promise<TransactionResult> {
     return this.invokeContract(
       'set_unlock_time',
@@ -292,7 +304,7 @@ export class VaultClient {
   /**
    * Clear deposit time lockup for a user (admin operation).
    */
-  async clearUnlockTime(caller: string, user: string, source: Keypair): Promise<TransactionResult> {
+  async clearUnlockTime(caller: string, user: string, source?: Keypair): Promise<TransactionResult> {
     return this.invokeContract(
       'clear_unlock_time',
       [addressToScVal(caller), addressToScVal(user)],
@@ -307,7 +319,7 @@ export class VaultClient {
     from: string,
     to: string,
     amount: bigint,
-    source: Keypair,
+    source?: Keypair,
   ): Promise<TransactionResult> {
     return this.invokeContract(
       'transfer',
@@ -324,7 +336,7 @@ export class VaultClient {
     spender: string,
     amount: bigint,
     exp: number,
-    source: Keypair,
+    source?: Keypair,
   ): Promise<TransactionResult> {
     return this.invokeContract(
       'approve',
@@ -341,7 +353,7 @@ export class VaultClient {
     from: string,
     to: string,
     amount: bigint,
-    source: Keypair,
+    source?: Keypair,
   ): Promise<TransactionResult> {
     return this.invokeContract(
       'transfer_from',
@@ -555,20 +567,59 @@ export class VaultClient {
   private async invokeContract(
     method: string,
     args: xdr.ScVal[],
-    source: Keypair,
+    source?: Keypair,
   ): Promise<TransactionResult> {
     return this.withRetry(async () => {
       try {
-        const txXdr = await buildInvokeTransaction(
+        // An explicit Keypair is used to build and sign the transaction inline.
+        if (source) {
+          const txXdr = await buildInvokeTransaction(
+            this.rpcUrl,
+            this.networkPassphrase,
+            this.contractId,
+            method,
+            args,
+            source,
+          );
+
+          const response = await submitTransaction(this.rpcUrl, txXdr);
+
+          if (response.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+            return {
+              success: true,
+              hash: response.txHash,
+              returnValue: response.returnValue ? scValToNative(response.returnValue) : undefined,
+            };
+          }
+
+          return {
+            success: false,
+            hash: response.txHash,
+          };
+        }
+
+        // Otherwise fall back to the configured wallet adapter.
+        if (!this.walletAdapter) {
+          throw new SignerRequiredError(
+            'A signer (Keypair or connected WalletAdapter) is required to execute write transactions',
+          );
+        }
+        if (!this.walletAdapter.connected || !this.walletAdapter.publicKey) {
+          throw new SignerRequiredError('Wallet adapter is not connected');
+        }
+
+        const unsignedXdr = await buildUnsignedTransaction(
           this.rpcUrl,
           this.networkPassphrase,
           this.contractId,
           method,
           args,
-          source,
+          this.walletAdapter.publicKey,
         );
 
-        const response = await submitTransaction(this.rpcUrl, txXdr);
+        const signedXdr = await this.walletAdapter.signTransaction(unsignedXdr);
+
+        const response = await submitTransaction(this.rpcUrl, signedXdr);
 
         if (response.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
           return {
