@@ -45,9 +45,10 @@ curl -H "Authorization: Bearer $INDEXER_API_TOKEN" http://localhost:3000/api/v1/
 On startup the `indexer` container runs:
 
 ```
-npx prisma migrate deploy && npx prisma db seed && npm run dev
+npx prisma migrate deploy && npx prisma db seed && node dist/index.js
 ```
 
+This is the `command:` on the `indexer` service in `docker-compose.yml`:
 - `prisma migrate deploy` applies the committed migrations from
   `prisma/migrations/` that have not run yet, in order. It never drafts new
   migrations and never resets data, which makes it the right command for
@@ -56,11 +57,25 @@ npx prisma migrate deploy && npx prisma db seed && npm run dev
   development command that may reset the database to reconcile drift.
 - `prisma db seed` inserts a few clearly marked sample rows from
   `prisma/seed.ts` (no secrets; ledger `0` and `seed-` txHashes).
+- `node dist/index.js` starts the compiled server (the image's default
+  `CMD`); Compose overrides the default entry sequence with the command
+  above so migrations are guaranteed to run first.
 
 To change the schema: edit `prisma/schema.prisma`, run
 `npx prisma migrate dev --name <change>` against a disposable local database,
 and commit the new folder under `prisma/migrations/`. The same SQL can be
 applied outside Docker with `npm run db:deploy` (`prisma migrate deploy`).
+## Health and monitoring
+
+`GET /health` remains the database readiness probe. `GET /healthz` returns
+`status`, `lastIndexedLedger`, `latestNetworkLedger`, and `lag` for external
+health and lag monitors. The default lag warning threshold is 100 ledgers and
+can be changed with `INDEXER_LAG_THRESHOLD`.
+
+Lag alerts are emitted as one-line JSON to stdout using the existing sanitized
+logger. Alert monitors can match `alert: "indexer_lag_threshold_exceeded"`
+and inspect `lastIndexedLedger`, `latestNetworkLedger`, `lag`, and `threshold`;
+no paid alerting client or service integration is required.
 
 ## API authentication
 
@@ -119,6 +134,11 @@ docker run -p 3000:3000 \
   -e PORT=3000 \
   bc-forge-indexer
 ```
+
+> `docker run` starts the server only — it does not apply migrations or seed
+> (that is the Compose stack's job via its `command:`). Run
+> `npm run db:deploy && npm run db:seed` against the target database first,
+> or use the Compose quick start above.
 
 ### Environment Variables
 

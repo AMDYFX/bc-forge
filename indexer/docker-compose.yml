@@ -24,6 +24,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Apply the committed migrations, insert the sample seed rows, then start
+    # the compiled server (#949). `migrate deploy` (never `migrate dev`) is
+    # the start-up-safe command: it only applies committed migrations from
+    # prisma/migrations/ and never drafts or resets anything.
+    command: sh -c "npx prisma migrate deploy && npx prisma db seed && node dist/index.js"
     environment:
       DATABASE_URL: postgresql://bcforge:bcforge@postgres:5432/bcforge
       RPC_URL: https://soroban-testnet.stellar.org
