@@ -7,12 +7,18 @@ import { useMint } from './hooks';
 const mockSetWalletAdapter = jest.fn();
 const mockGetWalletAdapter = jest.fn();
 const mockMint = jest.fn();
+const mockVaultSetWalletAdapter = jest.fn();
+const mockVaultGetWalletAdapter = jest.fn();
 
 jest.mock('@bc-forge/sdk', () => ({
   bcForgeClient: jest.fn().mockImplementation(() => ({
     setWalletAdapter: mockSetWalletAdapter,
     getWalletAdapter: mockGetWalletAdapter,
     mint: mockMint,
+  })),
+  VaultClient: jest.fn().mockImplementation(() => ({
+    setWalletAdapter: mockVaultSetWalletAdapter,
+    getWalletAdapter: mockVaultGetWalletAdapter,
   })),
   FreighterAdapter: class {},
   AlbedoAdapter: class {},
@@ -70,9 +76,9 @@ function WalletProbe() {
   );
 }
 
-function renderWallet(adapter: WalletAdapter) {
+function renderWallet(adapter: WalletAdapter, withVault = false) {
   return render(
-    <BcForgeProvider config={config}>
+    <BcForgeProvider config={config} vaultConfig={withVault ? config : undefined}>
       <WalletProvider adapterFactories={{ freighter: () => adapter }}>
         <WalletProbe />
       </WalletProvider>
@@ -84,6 +90,8 @@ describe('wallet state machine', () => {
   beforeEach(() => {
     mockSetWalletAdapter.mockClear();
     mockGetWalletAdapter.mockReset().mockReturnValue(undefined);
+    mockVaultSetWalletAdapter.mockClear();
+    mockVaultGetWalletAdapter.mockReset().mockReturnValue(undefined);
     mockMint.mockReset();
   });
 
@@ -105,6 +113,19 @@ describe('wallet state machine', () => {
     });
     expect(screen.getByTestId('wallet-key')).toHaveTextContent(adapter.publicKey as string);
     expect(mockSetWalletAdapter).toHaveBeenLastCalledWith(adapter);
+  });
+
+  it('registers the connected adapter with the configured vault client', async () => {
+    const adapter = createFakeAdapter();
+    renderWallet(adapter, true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'connect' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('wallet-status')).toHaveTextContent('connected');
+    });
+    expect(mockSetWalletAdapter).toHaveBeenLastCalledWith(adapter);
+    expect(mockVaultSetWalletAdapter).toHaveBeenLastCalledWith(adapter);
   });
 
   it('enters error when the adapter rejects the connection', async () => {

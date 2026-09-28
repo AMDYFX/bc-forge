@@ -19,11 +19,13 @@ import type { WalletAdapter } from '@bc-forge/sdk';
 
 interface BcForgeContextType {
   client: bcForgeClient | null;
+  vaultClient: VaultClient | null;
   networkPassphrase: string | null;
 }
 
 const bcForgeContext = createContext<BcForgeContextType>({
   client: null,
+  vaultClient: null,
   networkPassphrase: null,
 });
 
@@ -35,9 +37,13 @@ export interface BcForgeProviderProps {
 
 export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({ config, vaultConfig, children }) => {
   const client = useMemo(() => new bcForgeClient(config), [config]);
+  const vaultClient = useMemo(
+    () => (vaultConfig ? new VaultClient(vaultConfig) : null),
+    [vaultConfig],
+  );
   const value = useMemo(
-    () => ({ client, networkPassphrase: config.networkPassphrase }),
-    [client, config.networkPassphrase],
+    () => ({ client, vaultClient, networkPassphrase: config.networkPassphrase }),
+    [client, vaultClient, config.networkPassphrase],
   );
 
   return <bcForgeContext.Provider value={value}>{children}</bcForgeContext.Provider>;
@@ -49,6 +55,15 @@ export const useBcForgeClient = () => {
     throw new Error('useBcForgeClient must be used within a BcForgeProvider');
   }
   return context.client;
+};
+
+/** Returns the vault client configured on {@link BcForgeProvider}. */
+export const useVaultClient = (): VaultClient => {
+  const context = useContext(bcForgeContext);
+  if (!context.vaultClient) {
+    throw new Error('useVaultClient requires vaultConfig on BcForgeProvider');
+  }
+  return context.vaultClient;
 };
 
 // ─── Wallet connection (#902, #953) ────────────────────────────────────────
@@ -229,7 +244,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({
   children,
   adapterFactories,
 }) => {
-  const { client, networkPassphrase } = useContext(bcForgeContext);
+  const { client, vaultClient, networkPassphrase } = useContext(bcForgeContext);
   if (!client || !networkPassphrase) {
     throw new Error('WalletProvider must be used within a BcForgeProvider');
   }
@@ -242,8 +257,15 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({
     async (wallet: WalletName) => {
       const attempt = ++connectAttempt.current;
       const previousAdapter =
-        activeAdapter.current ?? state.adapter ?? client.getWalletAdapter?.() ?? null;
-      if (previousAdapter) client.setWalletAdapter(undefined);
+        activeAdapter.current ??
+        state.adapter ??
+        client.getWalletAdapter?.() ??
+        vaultClient?.getWalletAdapter() ??
+        null;
+      if (previousAdapter) {
+        client.setWalletAdapter(undefined);
+        vaultClient?.setWalletAdapter(undefined);
+      }
       activeAdapter.current = null;
       dispatch({ type: 'connecting', wallet });
 
@@ -266,6 +288,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({
         const actualNetworkPassphrase = adapter.networkPassphrase;
         if (actualNetworkPassphrase && actualNetworkPassphrase !== networkPassphrase) {
           client.setWalletAdapter(undefined);
+          vaultClient?.setWalletAdapter(undefined);
           dispatch({
             type: 'wrong-network',
             wallet,
@@ -277,10 +300,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({
         }
 
         client.setWalletAdapter(adapter);
+        vaultClient?.setWalletAdapter(adapter);
         dispatch({ type: 'connected', wallet, adapter, publicKey: adapter.publicKey });
       } catch (err) {
         if (attempt !== connectAttempt.current) return;
         client.setWalletAdapter(undefined);
+        vaultClient?.setWalletAdapter(undefined);
         activeAdapter.current = adapter;
         dispatch({
           type: 'error',
@@ -290,12 +315,17 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({
         });
       }
     },
-    [adapterFactories, client, networkPassphrase, state],
+    [adapterFactories, client, networkPassphrase, state, vaultClient],
   );
 
   const disconnect = useCallback(async () => {
     const attempt = ++connectAttempt.current;
-    const adapter = activeAdapter.current ?? state.adapter ?? client.getWalletAdapter?.() ?? null;
+    const adapter =
+      activeAdapter.current ??
+      state.adapter ??
+      client.getWalletAdapter?.() ??
+      vaultClient?.getWalletAdapter() ??
+      null;
     const wallet =
       state.status === 'connected' || state.status === 'wrong-network' || state.status === 'connecting'
         ? state.wallet
@@ -305,6 +335,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({
 
     // Clear signer access synchronously so a write cannot start during disconnect.
     client.setWalletAdapter(undefined);
+    vaultClient?.setWalletAdapter(undefined);
     activeAdapter.current = null;
     dispatch({ type: 'disconnected' });
 
@@ -319,7 +350,7 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({
         error: err instanceof Error ? err : new Error(String(err)),
       });
     }
-  }, [client, state]);
+  }, [client, state, vaultClient]);
 
   const value = useMemo<WalletContextType>(
     () => ({
@@ -350,10 +381,10 @@ export type WalletConnection = WalletConnectionState;
  * reflected as connected when it reports a public key.
  */
 export function useWallet(): WalletConnection {
-  const { client, networkPassphrase } = useContext(bcForgeContext);
+  const { client, vaultClient, networkPassphrase } = useContext(bcForgeContext);
   const context = useContext(walletContext);
   const fallbackAdapter = context.state.status === 'disconnected'
-    ? client?.getWalletAdapter?.() ?? null
+    ? client?.getWalletAdapter?.() ?? vaultClient?.getWalletAdapter() ?? null
     : null;
   const adapter = context.adapter ?? fallbackAdapter;
 
