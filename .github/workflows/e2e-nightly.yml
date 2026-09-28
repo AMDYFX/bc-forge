@@ -1,0 +1,144 @@
+name: Nightly E2E (Testnet)
+
+# Runs the e2e suite against Stellar testnet on a nightly schedule.
+#
+# This workflow is intentionally NOT triggered by pull_request or push events:
+# it is slow and depends on the public testnet, so pull-request CI must never
+# wait on it. Only the cron schedule (and manual dispatch) start it. See
+# e2e/README.md for details.
+
+on:
+  schedule:
+    # Every night at 02:00 UTC.
+    - cron: '0 2 * * *'
+  # Allow maintainers to trigger a run on demand (e.g. before a release).
+  workflow_dispatch:
+
+# Never cancel a run that is already talking to testnet; just queue behind it.
+concurrency:
+  group: e2e-nightly-testnet
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  e2e-testnet:
+    name: E2E suite against Stellar testnet
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Rust toolchain + wasm target (CONTRIBUTING.md: Rust 1.74+ with
+      # wasm32-unknown-unknown; pin to the version used across CI).
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.96.0
+          targets: wasm32-unknown-unknown
+
+      - name: Setup Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Separate cache key so the nightly run does not evict PR CI caches.
+          shared-key: bc-forge-e2e-nightly
+
+      # Stellar CLI (CONTRIBUTING.md: 22.0+). The e2e suite shells out to
+      # `stellar` for identity/contract tooling, so install it even though the
+      # Rust tests themselves run through `cargo test`.
+      - name: Install Stellar CLI system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libdbus-1-dev \
+            libudev-dev \
+            pkg-config
+
+      - name: Install Stellar CLI
+        run: |
+          cargo install stellar-cli --version 22.0.0 --locked \
+            || cargo install stellar-cli --locked \
+            || cargo install soroban-cli --locked
+
+      - name: Verify testnet RPC is reachable
+        env:
+          STELLAR_TESTNET_RPC_URL: https://soroban-testnet.stellar.org
+        run: |
+          set -euo pipefail
+          curl -sS -f -X POST "${STELLAR_TESTNET_RPC_URL}" \
+            -H 'content-type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"getLatestLedger"}' \
+            | tee rpc-health.json
+          echo "Testnet RPC responded."
+
+      # Create a throwaway identity and fund it with friendbot so the suite can
+      # exercise real on-chain accounts.
+      - name: Create and fund testnet accounts with friendbot
+        run: |
+          set -euo pipefail
+          FRIENDBOT_URL="https://friendbot.stellar.org"
+          RPC_URL="https://soroban-testnet.stellar.org"
+
+          # Primary funded account used by the e2e suite.
+          stellar keys generate e2e-nightly --network testnet --overwrite
+          PUBLIC_KEY="$(stellar keys address e2e-nightly)"
+          SECRET_KEY="$(stellar keys show e2e-nightly)"
+
+          # Never echo the secret into the job log.
+          echo "::add-mask::${SECRET_KEY}"
+
+          # Explicitly fund through friendbot (idempotent on testnet).
+          curl -sS -f "${FRIENDBOT_URL}/?addr=${PUBLIC_KEY}" > /dev/null
+
+          # A second funded account lets tests move funds between accounts.
+          stellar keys generate e2e-nightly-counterparty --network testnet --overwrite
+          COUNTERPARTY_PUBLIC_KEY="$(stellar keys address e2e-nightly-counterparty)"
+          curl -sS -f "${FRIENDBOT_URL}/?addr=${COUNTERPARTY_PUBLIC_KEY}" > /dev/null
+
+          # Confirm friendbot funding landed before running the suite.
+          curl -sS -f "https://horizon-testnet.stellar.org/accounts/${PUBLIC_KEY}" > /dev/null
+          curl -sS -f "https://horizon-testnet.stellar.org/accounts/${COUNTERPARTY_PUBLIC_KEY}" > /dev/null
+
+          {
+            echo "STELLAR_TESTNET_RPC_URL=${RPC_URL}"
+            echo "STELLAR_TESTNET_PASSPHRASE=Test SDF Network ; September 2015"
+            echo "E2E_TESTNET_PUBLIC_KEY=${PUBLIC_KEY}"
+            echo "E2E_TESTNET_SECRET_KEY=${SECRET_KEY}"
+            echo "E2E_TESTNET_COUNTERPARTY_PUBLIC_KEY=${COUNTERPARTY_PUBLIC_KEY}"
+          } >> "$GITHUB_ENV"
+
+          echo "Funded testnet accounts: ${PUBLIC_KEY} / ${COUNTERPARTY_PUBLIC_KEY}"
+
+      # Run the e2e package. `pipefail` makes the step fail when a test fails
+      # even though the output is piped through `tee` for the failure artifact.
+      - name: Run e2e suite against testnet
+        run: |
+          set -o pipefail
+          cargo test -p bc-forge-e2e-tests -- --nocapture 2>&1 | tee e2e-nightly.log
+
+      - name: Summarize result
+        if: always()
+        run: |
+          {
+            echo "## Nightly E2E (testnet)"
+            echo ""
+            echo "- Result: \`${{ job.status }}\`"
+            echo "- Run ID: \`${{ github.run_id }}\`"
+            echo "- Log artifact: \`e2e-nightly-logs-${{ github.run_id }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload e2e logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-nightly-logs-${{ github.run_id }}
+          path: |
+            e2e-nightly.log
+            rpc-health.json
+          if-no-files-found: warn
+          retention-days: 14
