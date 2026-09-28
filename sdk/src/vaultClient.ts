@@ -64,6 +64,7 @@ export class VaultClient {
 
   /** Replace or set the wallet adapter at runtime. */
   setWalletAdapter(adapter?: WalletAdapter) {
+  setWalletAdapter(adapter?: WalletAdapter): void {
     this.walletAdapter = adapter;
   }
 
@@ -569,11 +570,20 @@ export class VaultClient {
     args: xdr.ScVal[],
     source?: Keypair,
   ): Promise<TransactionResult> {
+    const adapter = source ? undefined : this.walletAdapter;
+    if (!source && !adapter) throw new SignerRequiredError();
+    if (!source && (!adapter?.connected || !adapter.publicKey)) {
+      throw new SignerRequiredError('Wallet adapter is not connected');
+    }
+
     return this.withRetry(async () => {
       try {
         // An explicit Keypair is used to build and sign the transaction inline.
         if (source) {
           const txXdr = await buildInvokeTransaction(
+        let txXdr: string;
+        if (source) {
+          txXdr = await buildInvokeTransaction(
             this.rpcUrl,
             this.networkPassphrase,
             this.contractId,
@@ -616,6 +626,17 @@ export class VaultClient {
           args,
           this.walletAdapter.publicKey,
         );
+        } else {
+          const unsignedXdr = await buildUnsignedTransaction(
+            this.rpcUrl,
+            this.networkPassphrase,
+            this.contractId,
+            method,
+            args,
+            adapter!.publicKey!,
+          );
+          txXdr = await adapter!.signTransaction(unsignedXdr);
+        }
 
         const signedXdr = await this.walletAdapter.signTransaction(unsignedXdr);
 
@@ -634,7 +655,7 @@ export class VaultClient {
           hash: response.txHash,
         };
       } catch (error: unknown) {
-        if (error instanceof SimulationError) throw error;
+        if (error instanceof SimulationError || error instanceof SignerRequiredError) throw error;
         throw error;
       }
     });

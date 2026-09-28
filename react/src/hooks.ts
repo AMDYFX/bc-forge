@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useBcForgeClient, useOptionalBcForgeClient } from './context';
+import { useState, useEffect, useCallback } from 'react';
+import { useBcForgeClient, useVaultClient } from './context';
 import { Keypair } from '@stellar/stellar-sdk';
 import { VaultClient } from '@bc-forge/sdk';
 import type { TransactionResult, WalletAdapter } from '@bc-forge/sdk';
@@ -227,6 +229,7 @@ export function useAllowance(owner: string | undefined, spender: string | undefi
     if (!owner || !spender) return;
     try {
       setLoading(true);
+      setError(null);
       const allowance = await client.getAllowance(owner, spender);
       setData(allowance);
     } catch (err) {
@@ -287,6 +290,9 @@ export type UseVaultDepositOptions = UseVaultClientOptions;
  */
 export function useVaultDeposit(options: UseVaultDepositOptions = {}) {
   const client = useVaultClient(options);
+/** Hook to deposit into the vault using the configured client wallet adapter. */
+export function useVaultDeposit() {
+  const client = useVaultClient();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
@@ -308,6 +314,15 @@ export function useVaultDeposit(options: UseVaultDepositOptions = {}) {
         const failure = err instanceof Error ? err : new Error(String(err));
         setError(failure);
         throw failure;
+    async (caller: string, amount: bigint, minSharesOut?: bigint) => {
+      try {
+        setLoading(true);
+        setError(null);
+        return await client.deposit(caller, amount, undefined, minSharesOut);
+      } catch (err) {
+        const nextError = err instanceof Error ? err : new Error(String(err));
+        setError(nextError);
+        throw nextError;
       } finally {
         setLoading(false);
       }
@@ -411,4 +426,31 @@ export function useProposalVoting() {
   );
 
   return { approve, execute, pendingId, error, available: client !== null };
+  return { deposit, loading, error };
+}
+
+/** Hook to vote for a pending proposal through the configured client wallet. */
+export function useProposalVote() {
+  const client = useBcForgeClient();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const vote = useCallback(
+    async (admin: string, proposalId: bigint) => {
+      try {
+        setLoading(true);
+        setError(null);
+        return await client.approveProposal(admin, proposalId);
+      } catch (err) {
+        const nextError = err instanceof Error ? err : new Error(String(err));
+        setError(nextError);
+        throw nextError;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [client],
+  );
+
+  return { vote, loading, error };
 }

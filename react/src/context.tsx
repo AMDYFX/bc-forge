@@ -2,6 +2,8 @@ import React, { createContext, useContext, useMemo, useState, useCallback, React
 import {
   bcForgeClient,
   bcForgeClientConfig,
+  VaultClient,
+  VaultClientConfig,
   FreighterAdapter,
   AlbedoAdapter,
 } from '@bc-forge/sdk';
@@ -10,20 +12,26 @@ import { truncateMiddle } from './utils';
 
 interface bcForgeContextType {
   client: bcForgeClient | null;
+  vaultClient: VaultClient | null;
 }
 
-const bcForgeContext = createContext<bcForgeContextType>({ client: null });
+const bcForgeContext = createContext<bcForgeContextType>({ client: null, vaultClient: null });
 
 export interface BcForgeProviderProps {
   config: bcForgeClientConfig;
+  vaultConfig?: VaultClientConfig;
   children: ReactNode;
 }
 
-export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({ config, children }) => {
+export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({ config, vaultConfig, children }) => {
   const client = useMemo(() => new bcForgeClient(config), [config]);
+  const vaultClient = useMemo(
+    () => (vaultConfig ? new VaultClient(vaultConfig) : null),
+    [vaultConfig],
+  );
 
   return (
-    <bcForgeContext.Provider value={{ client }}>
+    <bcForgeContext.Provider value={{ client, vaultClient }}>
       {children}
     </bcForgeContext.Provider>
   );
@@ -47,6 +55,13 @@ export const useBcForgeClient = () => {
  */
 export const useOptionalBcForgeClient = (): bcForgeClient | null =>
   useContext(bcForgeContext).client;
+export const useVaultClient = (): VaultClient => {
+  const context = useContext(bcForgeContext);
+  if (!context.vaultClient) {
+    throw new Error('useVaultClient requires vaultConfig on BcForgeProvider');
+  }
+  return context.vaultClient;
+};
 
 // ─── Wallet connection (#902) ───────────────────────────────────────────────
 
@@ -93,6 +108,7 @@ export interface WalletProviderProps {
  */
 export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
   const client = useBcForgeClient();
+  const { vaultClient } = useContext(bcForgeContext);
   const [adapter, setAdapter] = useState<WalletAdapter | null>(null);
   const [error, setError] = useState<Error | null>(null);
 
@@ -103,13 +119,14 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         const next = wallet === 'freighter' ? new FreighterAdapter() : new AlbedoAdapter();
         await next.connect();
         client.setWalletAdapter(next);
+        vaultClient?.setWalletAdapter(next);
         setAdapter(next);
       } catch (err) {
         setAdapter(null);
         setError(err instanceof Error ? err : new Error(String(err)));
       }
     },
-    [client],
+    [client, vaultClient],
   );
 
   const disconnect = useCallback(async () => {
@@ -119,11 +136,12 @@ export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
         await adapter.disconnect();
       }
       client.setWalletAdapter(undefined);
+      vaultClient?.setWalletAdapter(undefined);
       setAdapter(null);
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)));
     }
-  }, [adapter, client]);
+  }, [adapter, client, vaultClient]);
 
   const value = useMemo<WalletContextType>(
     () => ({
