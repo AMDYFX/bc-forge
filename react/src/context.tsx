@@ -10,6 +10,8 @@ import React, {
 import {
   bcForgeClient,
   bcForgeClientConfig,
+  VaultClient,
+  VaultClientConfig,
   FreighterAdapter,
   AlbedoAdapter,
 } from '@bc-forge/sdk';
@@ -27,10 +29,11 @@ const bcForgeContext = createContext<BcForgeContextType>({
 
 export interface BcForgeProviderProps {
   config: bcForgeClientConfig;
+  vaultConfig?: VaultClientConfig;
   children: ReactNode;
 }
 
-export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({ config, children }) => {
+export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({ config, vaultConfig, children }) => {
   const client = useMemo(() => new bcForgeClient(config), [config]);
   const value = useMemo(
     () => ({ client, networkPassphrase: config.networkPassphrase }),
