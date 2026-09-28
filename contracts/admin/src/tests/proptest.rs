@@ -6,6 +6,7 @@ use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use soroban_sdk::testutils::{Address as _, Events, Ledger};
 use soroban_sdk::{vec, Address, BytesN, Env, IntoVal, Map, String, TryIntoVal, Vec};
+use std::boxed::Box;
 
 use super::{AdminContract, AdminContractClient, Role};
 use crate::{AdminError, AdminKey, ProposalStatus, UpgradeProposal};

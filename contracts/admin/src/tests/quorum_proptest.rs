@@ -11,6 +11,7 @@ use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{vec as sdk_vec, Address, Env, String, Vec};
+use std::boxed::Box;
 
 use super::{AdminContract, AdminContractClient};
 
