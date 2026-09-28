@@ -11,7 +11,9 @@
     "test": "node --test --import tsx src/lib/prisma.test.ts src/lib/logger.test.ts src/lib/lifecycle.test.ts src/lib/rateLimit.test.ts src/events.test.ts src/api.test.ts src/health.test.ts",
     "load-test": "node scripts/load-test.js",
     "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev"
+    "prisma:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@bc-forge/sdk": "^0.1.0",
@@ -29,5 +31,8 @@
     "prisma": "^5.10.0",
     "tsx": "^4.7.1",
     "typescript": "^5.3.3"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }
