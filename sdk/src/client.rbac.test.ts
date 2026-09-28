@@ -224,15 +224,15 @@ describe('bcForgeClient RBAC init', () => {
       return xdr.ScVal.scvMap([
         new xdr.ScMapEntry({
           key: xdr.ScVal.scvSymbol('pending_ids'),
-          val: xdr.ScVal.scvVec([xdr.ScVal.scvU64(1), xdr.ScVal.scvU64(3)]),
+          val: xdr.ScVal.scvVec([xdr.ScVal.scvU64(new xdr.Uint64(1)), xdr.ScVal.scvU64(new xdr.Uint64(3))]),
         }),
         new xdr.ScMapEntry({
           key: xdr.ScVal.scvSymbol('approved_ids'),
-          val: xdr.ScVal.scvVec([xdr.ScVal.scvU64(2)]),
+          val: xdr.ScVal.scvVec([xdr.ScVal.scvU64(new xdr.Uint64(2))]),
         }),
         new xdr.ScMapEntry({
           key: xdr.ScVal.scvSymbol('next_cursor'),
-          val: xdr.ScVal.scvU64(50),
+          val: xdr.ScVal.scvU64(new xdr.Uint64(50)),
         }),
       ]);
     }
