@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import apiRouter, { createApiRouter, jsonErrorHandler } from './api';
+import { publishIndexerEvent } from './events';
 import { setPrismaClientFactoryForTests } from './lib/prisma';
 
 const API_TOKEN = 'test-indexer-api-token';
@@ -127,6 +128,9 @@ function useMockLists(options: {
           findMany: createListMock(burns, options.seenBurnsArgs),
           count: async () => burns.length,
         },
+        webhook: {
+          findMany: async () => [],
+        },
       }) as never,
   );
 }
@@ -153,6 +157,7 @@ async function withServer<T>(
   router = apiRouter,
 ): Promise<T> {
   const app = express();
+  app.use(express.json());
   app.use('/api/v1', router);
   app.get('/health', (req, res) => {
     res.json({ status: 'ok' });
@@ -176,6 +181,130 @@ async function withServer<T>(
 function authHeaders(): Record<string, string> {
   return { authorization: `Bearer ${API_TOKEN}` };
 }
+
+test('webhook registration accepts HTTPS targets and deletion removes the saved row', async () => {
+  const saved = {
+    id: 'hook-1',
+    url: 'https://hooks.example.test/events',
+    createdAt: new Date(Date.UTC(2026, 8, 27)),
+  };
+  const operations: string[] = [];
+
+  setPrismaClientFactoryForTests(
+    () =>
+      ({
+        webhook: {
+          upsert: async (args: {
+            where: { url: string };
+            create: { url: string };
+          }) => {
+            operations.push(`upsert:${args.where.url}`);
+            assert.equal(args.where.url, saved.url);
+            assert.equal(args.create.url, saved.url);
+            return saved;
+          },
+          delete: async (args: { where: { id: string } }) => {
+            operations.push(`delete:${args.where.id}`);
+            assert.equal(args.where.id, saved.id);
+            return saved;
+          },
+          findMany: async () => [],
+        },
+      }) as never,
+  );
+
+  await withServer(async (baseUrl) => {
+    const create = await fetch(`${baseUrl}/api/v1/webhooks`, {
+      method: 'POST',
+      headers: {
+        ...authHeaders(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ url: saved.url }),
+    });
+    assert.equal(create.status, 201);
+    assert.deepEqual(await create.json(), {
+      data: JSON.parse(JSON.stringify(saved)),
+    });
+
+    const remove = await fetch(`${baseUrl}/api/v1/webhooks/${saved.id}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    assert.equal(remove.status, 204);
+    assert.equal(await remove.text(), '');
+  });
+
+  assert.deepEqual(operations, [`upsert:${saved.url}`, `delete:${saved.id}`]);
+}, createApiRouter());
+
+test('webhook registration rejects non-HTTPS targets', async () => {
+  setPrismaClientFactoryForTests(
+    () =>
+      ({
+        webhook: {
+          upsert: async () => {
+            throw new Error('upsert must not run for invalid URL');
+          },
+          findMany: async () => [],
+        },
+      }) as never,
+  );
+
+  await withServer(async (baseUrl) => {
+    for (const url of ['http://example.test/hook', 'not-a-url', 'https://user:pw@example.test/hook']) {
+      const res = await fetch(`${baseUrl}/api/v1/webhooks`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders(),
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ url }),
+      });
+      assert.equal(res.status, 400, url);
+    }
+  }, createApiRouter());
+});
+
+test('SSE stream emits one newly published indexer event', async () => {
+  useMockLists({});
+
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/v1/events/stream`, {
+      headers: authHeaders(),
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /^text\/event-stream/);
+    assert.ok(response.body);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    // Consume the initial ": connected" comment before publishing.
+    const first = await reader.read();
+    assert.equal(first.done, false);
+    assert.match(decoder.decode(first.value), /connected/);
+
+    const event = {
+      type: 'mint' as const,
+      data: { id: 'mint-live-1', to: 'GABC', amount: '5', ledger: 999 },
+    };
+    publishIndexerEvent(event);
+
+    let payload = '';
+    for (let i = 0; i < 4 && !payload.includes('mint-live-1'); i += 1) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      payload += decoder.decode(chunk.value, { stream: true });
+    }
+
+    assert.match(payload, /event: mint/);
+    assert.match(payload, /mint-live-1/);
+    assert.match(payload, /"ledger":999/);
+
+    await reader.cancel();
+  }, createApiRouter());
+});
 
 test('read routes return 401 without a bearer token', async () => {
   useMockLists({});

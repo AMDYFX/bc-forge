@@ -1,6 +1,7 @@
 import { rpc as SorobanRpc, xdr, scValToNative } from '@stellar/stellar-sdk';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
+import { publishIndexerEvent } from './events';
 
 dotenv.config();
 
@@ -88,7 +89,7 @@ async function processEvent(event: SorobanRpc.Api.EventResponse) {
       case 'mint': {
         const decoded = scValToNative(data as any);
         // (admin, to, amount, new_balance, new_supply, version)
-        await prisma.mint.create({
+        const row = await prisma.mint.create({
           data: {
             to: decoded[1],
             amount: decoded[2].toString(),
@@ -96,12 +97,13 @@ async function processEvent(event: SorobanRpc.Api.EventResponse) {
             txHash: event.txHash,
           },
         });
+        publishIndexerEvent({ type: 'mint', data: row as unknown as Record<string, unknown> });
         break;
       }
       case 'burn': {
         const decoded = scValToNative(data as any);
         // (from, amount, new_balance, new_supply, version)
-        await prisma.burn.create({
+        const row = await prisma.burn.create({
           data: {
             from: decoded[0],
             amount: decoded[1].toString(),
@@ -109,12 +111,13 @@ async function processEvent(event: SorobanRpc.Api.EventResponse) {
             txHash: event.txHash,
           },
         });
+        publishIndexerEvent({ type: 'burn', data: row as unknown as Record<string, unknown> });
         break;
       }
       case 'xfer': {
         const decoded = scValToNative(data as any);
         // (from, to, amount, version)
-        await prisma.transfer.create({
+        const row = await prisma.transfer.create({
           data: {
             from: decoded[0],
             to: decoded[1],
@@ -123,12 +126,13 @@ async function processEvent(event: SorobanRpc.Api.EventResponse) {
             txHash: event.txHash,
           },
         });
+        publishIndexerEvent({ type: 'transfer', data: row as unknown as Record<string, unknown> });
         break;
       }
       case 'xfer_frm': {
         const decoded = scValToNative(data as any);
         // (spender, from, to, amount, remaining_allowance, version)
-        await prisma.transfer.create({
+        const row = await prisma.transfer.create({
           data: {
             from: decoded[1],
             to: decoded[2],
@@ -137,6 +141,7 @@ async function processEvent(event: SorobanRpc.Api.EventResponse) {
             txHash: event.txHash,
           },
         });
+        publishIndexerEvent({ type: 'transfer', data: row as unknown as Record<string, unknown> });
         break;
       }
     }

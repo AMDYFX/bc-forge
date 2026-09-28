@@ -31,6 +31,10 @@ tags:
     description: Paginated token-event logs (mints, transfers, burns)
   - name: stats
     description: Aggregate counters
+  - name: streaming
+    description: Live server-sent event stream
+  - name: webhooks
+    description: Persisted HTTPS webhook subscriptions
 
 components:
   securitySchemes:
@@ -278,6 +282,50 @@ components:
           description: Total number of indexed burn events.
           example: 256
 
+    IndexerEvent:
+      type: object
+      required:
+        - type
+        - data
+      properties:
+        type:
+          type: string
+          enum:
+            - mint
+            - transfer
+            - burn
+        data:
+          type: object
+          additionalProperties: true
+          description: The newly persisted Mint, Transfer, or Burn row.
+
+    Webhook:
+      type: object
+      required:
+        - id
+        - url
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        url:
+          type: string
+          format: uri
+          pattern: "^https://"
+          example: https://hooks.example.com/bc-forge
+        createdAt:
+          type: string
+          format: date-time
+
+    WebhookResponse:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          $ref: "#/components/schemas/Webhook"
+
     HealthStatus:
       type: object
       required:
@@ -310,6 +358,104 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /api/v1/events/stream:
+    get:
+      operationId: streamIndexerEvents
+      tags:
+        - streaming
+      summary: Stream newly persisted token events
+      description: |
+        Opens a text/event-stream connection. Each newly persisted mint,
+        transfer, or burn is emitted with its type as the SSE event name
+        and the same { type, data } JSON envelope that webhook subscribers
+        receive.
+      responses:
+        "200":
+          description: Live SSE stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/webhooks:
+    post:
+      operationId: registerWebhook
+      tags:
+        - webhooks
+      summary: Register an HTTPS webhook
+      description: |
+        Persists an HTTPS webhook URL. Re-registering the same normalized URL
+        is idempotent. New indexer events are POSTed asynchronously; failures
+        are logged and retried once without blocking indexing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+              properties:
+                url:
+                  type: string
+                  format: uri
+                  pattern: "^https://"
+                  example: https://hooks.example.com/bc-forge
+      responses:
+        "201":
+          description: Webhook registered.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookResponse"
+        "400":
+          description: URL is missing, invalid, not HTTPS, or embeds credentials.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/v1/webhooks/{id}:
+    delete:
+      operationId: deleteWebhook
+      tags:
+        - webhooks
+      summary: Remove a webhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Webhook removed.
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Webhook not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api/v1/mints:
     get:
