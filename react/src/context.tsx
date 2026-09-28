@@ -1,5 +1,11 @@
-import React, { createContext, useContext, useMemo, ReactNode } from 'react';
-import { bcForgeClient, bcForgeClientConfig } from '@bc-forge/sdk';
+import React, { createContext, useContext, useMemo, useState, useCallback, ReactNode } from 'react';
+import {
+  bcForgeClient,
+  bcForgeClientConfig,
+  FreighterAdapter,
+  AlbedoAdapter,
+} from '@bc-forge/sdk';
+import type { WalletAdapter } from '@bc-forge/sdk';
 
 interface bcForgeContextType {
   client: bcForgeClient | null;
@@ -30,20 +36,139 @@ export const useBcForgeClient = () => {
   return context.client;
 };
 
-export interface WalletState {
+// ─── Wallet connection (#902) ───────────────────────────────────────────────
+
+/** Wallets offered by {@link WalletProvider}'s `connect`. */
+export type WalletName = 'freighter' | 'albedo';
+
+/** Truncates a Stellar public key for display: `GABC…WXYZ`. */
+export function truncatePublicKey(publicKey: string): string {
+  if (publicKey.length <= 10) return publicKey;
+  return `${publicKey.slice(0, 4)}…${publicKey.slice(-4)}`;
+}
+
+interface WalletContextType {
+  /** The connected wallet adapter, or `null` when disconnected. */
+  adapter: WalletAdapter | null;
+  /** The connected account's public key, or `null` when disconnected. */
+  publicKey: string | null;
+  /** Whether a wallet is connected. */
   connected: boolean;
-  publicKey?: string;
+  /** Error from the most recent connect/disconnect attempt, if any. */
+  error: Error | null;
+  /** Connect to the named wallet and set it as the client's signer. */
+  connect: (wallet: WalletName) => Promise<void>;
+  /** Disconnect the current wallet and clear the client's signer. */
+  disconnect: () => Promise<void>;
+}
+
+const walletContext = createContext<WalletContextType>({
+  adapter: null,
+  publicKey: null,
+  connected: false,
+  error: null,
+  connect: async () => {},
+  disconnect: async () => {},
+});
+
+export interface WalletProviderProps {
+  children: ReactNode;
 }
 
 /**
- * Connection state of the wallet adapter on the SDK client in `BcForgeProvider`.
- * Disconnected when there is no provider, no adapter, or the adapter is not connected.
+ * Provides Freighter / Albedo wallet connection state. Must be rendered
+ * inside a {@link BcForgeProvider}; on connect the adapter is registered with
+ * `client.setWalletAdapter` so write hooks submit without a secret key.
  */
-export function useWallet(): WalletState {
+export const WalletProvider: React.FC<WalletProviderProps> = ({ children }) => {
+  const client = useBcForgeClient();
+  const [adapter, setAdapter] = useState<WalletAdapter | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+
+  const connect = useCallback(
+    async (wallet: WalletName) => {
+      setError(null);
+      try {
+        const next = wallet === 'freighter' ? new FreighterAdapter() : new AlbedoAdapter();
+        await next.connect();
+        client.setWalletAdapter(next);
+        setAdapter(next);
+      } catch (err) {
+        setAdapter(null);
+        setError(err instanceof Error ? err : new Error(String(err)));
+      }
+    },
+    [client],
+  );
+
+  const disconnect = useCallback(async () => {
+    setError(null);
+    try {
+      if (adapter) {
+        await adapter.disconnect();
+      }
+      client.setWalletAdapter(undefined);
+      setAdapter(null);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    }
+  }, [adapter, client]);
+
+  const value = useMemo<WalletContextType>(
+    () => ({
+      adapter,
+      publicKey: adapter?.publicKey ?? null,
+      connected: Boolean(adapter?.connected && adapter?.publicKey),
+      error,
+      connect,
+      disconnect,
+    }),
+    [adapter, error, connect, disconnect],
+  );
+
+  return <walletContext.Provider value={value}>{children}</walletContext.Provider>;
+};
+
+/** Access the wallet connection state provided by {@link WalletProvider}. */
+export const useWalletContext = () => useContext(walletContext);
+
+export interface WalletState {
+  connected: boolean;
+  /** Connected account's public key; absent or `null` when disconnected. */
+  publicKey?: string | null;
+}
+
+/** Full wallet state returned by {@link useWallet}. */
+export interface WalletConnectionState extends WalletState {
+  /** The connected adapter's name (`freighter` / `albedo`), or `null`. */
+  name: string | null;
+  /** Error from the most recent connect/disconnect attempt, if any. */
+  error: Error | null;
+  /** Connect to the named wallet and set it as the client's signer. */
+  connect: (wallet: WalletName) => Promise<void>;
+  /** Disconnect the current wallet and clear the client's signer. */
+  disconnect: () => Promise<void>;
+}
+
+/**
+ * Connection state of the wallet adapter on the SDK client in
+ * `BcForgeProvider`, plus the {@link WalletProvider} connect/disconnect
+ * actions. Disconnected when there is no adapter, or the adapter is not
+ * connected. Works with an adapter registered directly on the client even
+ * when no {@link WalletProvider} is mounted.
+ */
+export function useWallet(): WalletConnectionState {
   const { client } = useContext(bcForgeContext);
-  const adapter = client?.getWalletAdapter();
-  if (!adapter?.connected || !adapter.publicKey) {
-    return { connected: false };
-  }
-  return { connected: true, publicKey: adapter.publicKey };
+  const { adapter: providerAdapter, connect, disconnect, error } =
+    useContext(walletContext);
+  const adapter = providerAdapter ?? client?.getWalletAdapter?.() ?? null;
+  const connected = Boolean(adapter?.connected && adapter?.publicKey);
+  return {
+    connected,
+    publicKey: connected ? (adapter?.publicKey ?? null) : null,
+    name: adapter?.name ?? null,
+    error,
+    connect,
+    disconnect,
+  };
 }
