@@ -63,6 +63,17 @@ export const useVaultClient = (): VaultClient => {
   return context.vaultClient;
 };
 
+/**
+ * The {@link VaultClient} from the nearest {@link BcForgeProvider}, or `null`
+ * when no provider is mounted or it was configured without `vaultConfig`.
+ *
+ * Unlike {@link useVaultClient} this never throws, so the product components
+ * can be rendered standalone: they fall back to their own props instead of
+ * requiring a provider just to render.
+ */
+export const useOptionalVaultClient = (): VaultClient | null =>
+  useContext(bcForgeContext).vaultClient;
+
 // ─── Wallet connection (#902) ───────────────────────────────────────────────
 
 /** Wallets offered by {@link WalletProvider}'s `connect`. */

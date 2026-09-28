@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { Keypair } from '@stellar/stellar-sdk';
 import type { TransactionResult, WalletAdapter } from '@bc-forge/sdk';
+import { VaultClient } from '@bc-forge/sdk';
 
-import { useVaultClient, useVaultShareBalance, useWallet } from '../hooks';
-import { truncatePublicKey } from '../context';
+import { useVaultShareBalance, useWallet } from '../hooks';
+import { truncatePublicKey, useOptionalVaultClient } from '../context';
 import { formatTokenAmount, parsePositiveInteger } from '../utils';
 import { Alert } from './Alert';
 import { TransactionToast, type TransactionToastStatus } from './TransactionToast';
@@ -114,8 +115,14 @@ export const VaultDepositWidget: React.FC<VaultDepositWidgetProps> = ({
   className,
 }) => {
   const { connected, publicKey } = useWallet();
-  const clientOptions = { client: clientProp, rpcUrl, networkPassphrase, contractId, walletAdapter };
-  const client = useVaultClient(clientOptions);
+  const contextVaultClient = useOptionalVaultClient();
+  const client = useMemo(() => {
+    if (clientProp) return clientProp;
+    if (rpcUrl && networkPassphrase && contractId) {
+      return new VaultClient({ rpcUrl, networkPassphrase, contractId, walletAdapter });
+    }
+    return contextVaultClient;
+  }, [clientProp, rpcUrl, networkPassphrase, contractId, walletAdapter, contextVaultClient]);
 
   const [amount, setAmount] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -130,10 +137,11 @@ export const VaultDepositWidget: React.FC<VaultDepositWidgetProps> = ({
   } | null>(null);
 
   const depositor = address ?? (connected ? (publicKey ?? undefined) : undefined);
-  const { data: shareBalance, refetch: refetchShareBalance } = useVaultShareBalance(depositor, {
-    ...clientOptions,
-    enabled: showShareBalance,
-  });
+  const { data: shareBalance, refetch: refetchShareBalance } = useVaultShareBalance(
+    depositor,
+    client,
+    showShareBalance,
+  );
 
   const [vaultDecimals, setVaultDecimals] = useState<number | undefined>(decimals);
 

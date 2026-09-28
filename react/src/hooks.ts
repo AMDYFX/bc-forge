@@ -1,10 +1,7 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
-import { useBcForgeClient, useOptionalBcForgeClient } from './context';
 import { useState, useEffect, useCallback } from 'react';
-import { useBcForgeClient, useVaultClient } from './context';
-import { Keypair } from '@stellar/stellar-sdk';
-import { VaultClient } from '@bc-forge/sdk';
-import type { TransactionResult, WalletAdapter } from '@bc-forge/sdk';
+import { useBcForgeClient, useOptionalBcForgeClient, useVaultClient } from './context';
+import type { Keypair } from '@stellar/stellar-sdk';
+import type { TransactionResult, VaultClient } from '@bc-forge/sdk';
 
 /**
  * Hook to read the connected wallet state: adapter name, public key,
@@ -246,50 +243,6 @@ export function useAllowance(owner: string | undefined, spender: string | undefi
   return { data, loading, error, refetch: fetchAllowance };
 }
 
-// ─── Vault hooks (#950) ──────────────────────────────────────────────────────
-
-export interface UseVaultClientOptions {
-  /** Pre-instantiated {@link VaultClient}. Takes precedence over the fields below. */
-  client?: VaultClient;
-  /** Soroban RPC endpoint; needed to build a client from the other fields. */
-  rpcUrl?: string;
-  /** Stellar network passphrase. */
-  networkPassphrase?: string;
-  /** Deployed vault contract ID. */
-  contractId?: string;
-  /** Wallet adapter registered on a newly built client. */
-  walletAdapter?: WalletAdapter;
-}
-
-/**
- * Resolves a {@link VaultClient} from an explicit instance or from the
- * connection fields, returning `null` when neither is available. Never throws,
- * so callers can render a read-only or disabled UI without a client.
- *
- * Memoised on the option identity: pass a pre-built `client`, or a stable
- * `walletAdapter`, to avoid rebuilding it on every render.
- */
-export function useVaultClient(options: UseVaultClientOptions = {}): VaultClient | null {
-  const { client, rpcUrl, networkPassphrase, contractId, walletAdapter } = options;
-  return useMemo(() => {
-    if (client) return client;
-    if (!rpcUrl || !networkPassphrase || !contractId) return null;
-    return new VaultClient({ rpcUrl, networkPassphrase, contractId, walletAdapter });
-  }, [client, rpcUrl, networkPassphrase, contractId, walletAdapter]);
-}
-
-export type UseVaultDepositOptions = UseVaultClientOptions;
-
-/**
- * Wraps {@link VaultClient.deposit} with `loading` / `error` state.
- *
- * Omit `source` to let the connected wallet adapter sign, in which case
- * `caller` is also the transaction source account.
- *
- * @throws When no {@link VaultClient} could be resolved from the options.
- */
-export function useVaultDeposit(options: UseVaultDepositOptions = {}) {
-  const client = useVaultClient(options);
 /** Hook to deposit into the vault using the configured client wallet adapter. */
 export function useVaultDeposit() {
   const client = useVaultClient();
@@ -297,23 +250,6 @@ export function useVaultDeposit() {
   const [error, setError] = useState<Error | null>(null);
 
   const deposit = useCallback(
-    async (
-      caller: string,
-      amount: bigint,
-      source?: Keypair,
-      minSharesOut?: bigint,
-    ): Promise<TransactionResult> => {
-      if (!client) {
-        throw new Error('useVaultDeposit requires a VaultClient via the `client` option');
-      }
-      try {
-        setLoading(true);
-        setError(null);
-        return await client.deposit(caller, amount, source, minSharesOut);
-      } catch (err) {
-        const failure = err instanceof Error ? err : new Error(String(err));
-        setError(failure);
-        throw failure;
     async (caller: string, amount: bigint, minSharesOut?: bigint) => {
       try {
         setLoading(true);
@@ -330,24 +266,50 @@ export function useVaultDeposit() {
     [client],
   );
 
-  return { deposit, client, loading, error };
+  return { deposit, loading, error };
 }
 
-export interface UseVaultShareBalanceOptions extends UseVaultClientOptions {
-  /** Skip fetching while false. @default true */
-  enabled?: boolean;
+/** Hook to vote for a pending proposal through the configured client wallet. */
+export function useProposalVote() {
+  const client = useBcForgeClient();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const vote = useCallback(
+    async (admin: string, proposalId: bigint) => {
+      try {
+        setLoading(true);
+        setError(null);
+        return await client.approveProposal(admin, proposalId);
+      } catch (err) {
+        const nextError = err instanceof Error ? err : new Error(String(err));
+        setError(nextError);
+        throw nextError;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [client],
+  );
+
+  return { vote, loading, error };
 }
+
+// ─── Vault share balance (#950) ─────────────────────────────────────────────
 
 /**
  * Reads a depositor's vault share balance through {@link VaultClient}.
- * Returns `data: null` when no address is given or no client is available.
+ *
+ * `client` may be `null` when the host component could not resolve one (for
+ * example before the `BcForgeProvider` is configured); the hook then leaves
+ * `data` as `null` instead of throwing. Set `enabled` to `false` to suspend
+ * the lookup (for example while the widget is disconnected).
  */
 export function useVaultShareBalance(
   address: string | undefined,
-  options: UseVaultShareBalanceOptions = {},
+  client: VaultClient | null,
+  enabled = true,
 ) {
-  const { enabled = true, ...clientOptions } = options;
-  const client = useVaultClient(clientOptions);
   const [data, setData] = useState<bigint | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
@@ -374,7 +336,7 @@ export function useVaultShareBalance(
   return { data, loading, error, refetch };
 }
 
-// ─── Proposal voting (#950) ───────────────────────────────────────────────────
+// ─── Proposal voting (#950) ─────────────────────────────────────────────────
 
 /**
  * Multi-sig proposal actions, backed by `bcForgeClient.approveProposal` and
@@ -426,31 +388,4 @@ export function useProposalVoting() {
   );
 
   return { approve, execute, pendingId, error, available: client !== null };
-  return { deposit, loading, error };
-}
-
-/** Hook to vote for a pending proposal through the configured client wallet. */
-export function useProposalVote() {
-  const client = useBcForgeClient();
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
-
-  const vote = useCallback(
-    async (admin: string, proposalId: bigint) => {
-      try {
-        setLoading(true);
-        setError(null);
-        return await client.approveProposal(admin, proposalId);
-      } catch (err) {
-        const nextError = err instanceof Error ? err : new Error(String(err));
-        setError(nextError);
-        throw nextError;
-      } finally {
-        setLoading(false);
-      }
-    },
-    [client],
-  );
-
-  return { vote, loading, error };
 }
