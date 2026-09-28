@@ -1467,7 +1467,9 @@ export class bcForgeClient {
           this.walletAdapter.publicKey,
         );
 
-        const signedXdr = await this.walletAdapter.signTransaction(unsignedXdr);
+        const signedXdr = await this.walletAdapter.signTransaction(unsignedXdr, {
+          networkPassphrase: this.networkPassphrase,
+        });
 
         const response = await submitTransaction(this.rpcUrl, signedXdr);
 
