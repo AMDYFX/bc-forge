@@ -2,6 +2,8 @@ import { rpc as SorobanRpc, xdr, scValToNative } from '@stellar/stellar-sdk';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import { publishIndexerEvent } from './events';
+import { logger } from './lib/logger';
+import { setLatestNetworkLedger } from './metrics';
 
 dotenv.config();
 
@@ -9,6 +11,7 @@ const prisma = new PrismaClient();
 
 const RPC_URL = process.env.RPC_URL || 'https://soroban-testnet.stellar.org';
 const CONTRACT_ID = process.env.CONTRACT_ID;
+const LAG_THRESHOLD = Number.parseInt(process.env.INDEXER_LAG_THRESHOLD || '100', 10);
 
 if (!CONTRACT_ID) {
   throw new Error('CONTRACT_ID environment variable is required');
@@ -20,7 +23,7 @@ const server = new SorobanRpc.Server(RPC_URL);
  * Main indexer loop to fetch and process Soroban events.
  */
 export async function runIndexer() {
-  console.log(`Starting indexer for contract: ${CONTRACT_ID}`);
+  logger.info('starting contract indexer', { contractId: CONTRACT_ID });
 
   // 1. Get the last indexed ledger
   let lastLedger = await prisma.lastIndexedLedger.findUnique({ where: { id: 1 } });
@@ -30,6 +33,17 @@ export async function runIndexer() {
   while (true) {
     try {
       const currentLedger = (await server.getLatestLedger()).sequence;
+      setLatestNetworkLedger(currentLedger);
+      const lag = Math.max(0, currentLedger - (startLedger - 1));
+      if (lag > LAG_THRESHOLD) {
+        logger.warn('indexer lag threshold exceeded', {
+          alert: 'indexer_lag_threshold_exceeded',
+          lastIndexedLedger: startLedger - 1,
+          latestNetworkLedger: currentLedger,
+          lag,
+          threshold: LAG_THRESHOLD,
+        });
+      }
       
       if (startLedger > currentLedger) {
         // Wait for new ledgers
@@ -38,7 +52,7 @@ export async function runIndexer() {
       }
 
       const endLedger = Math.min(startLedger + 1000, currentLedger);
-      console.log(`Indexing ledgers: ${startLedger} to ${endLedger}`);
+      logger.info('indexing ledger range', { startLedger, endLedger });
 
       const response = await server.getEvents({
         startLedger: startLedger,
@@ -66,7 +80,9 @@ export async function runIndexer() {
       // Small delay to avoid hammering the RPC
       await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (error) {
-      console.error('Indexer error:', error);
+      logger.error('indexer ingestion error', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
   }
@@ -148,7 +164,10 @@ async function processEvent(event: SorobanRpc.Api.EventResponse) {
   } catch (err: any) {
     // Unique constraint violation might happen if we re-index a ledger
     if (err.code !== 'P2002') {
-      console.error(`Error processing event topic ${topic}:`, err);
+      logger.error('event processing error', {
+        topic,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 }

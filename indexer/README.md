@@ -1,5 +1,17 @@
 # Indexer microservice
 
+## Health and monitoring
+
+`GET /health` remains the database readiness probe. `GET /healthz` returns
+`status`, `lastIndexedLedger`, `latestNetworkLedger`, and `lag` for external
+health and lag monitors. The default lag warning threshold is 100 ledgers and
+can be changed with `INDEXER_LAG_THRESHOLD`.
+
+Lag alerts are emitted as one-line JSON to stdout using the existing sanitized
+logger. Alert monitors can match `alert: "indexer_lag_threshold_exceeded"`
+and inspect `lastIndexedLedger`, `latestNetworkLedger`, `lag`, and `threshold`;
+no paid alerting client or service integration is required.
+
 ## API authentication
 
 The indexer read API (`/api/v1/mints`, `/api/v1/transfers`, `/api/v1/burns`,
