@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! # bc-forge Wrapper Contract
 //!
 //! Wraps any SEP-41 compliant token into a bc-forge compatible token,
@@ -168,6 +169,14 @@ pub enum WrapperError {
     EmergencyCapExceeded = 16,
     /// No queued withdrawal found to claim, or already claimed.
     NoQueuedWithdrawal = 17,
+    /// `rescue_tokens` was called on the underlying asset that `total_assets`
+    /// accounts for. User funds can never leave through the rescue hatch.
+    UnderlyingAssetProtected = 18,
+    /// `rescue_tokens` was called with a non-positive amount.
+    InvalidRescueAmount = 19,
+    /// `rescue_tokens` was called on this vault's own share token. Share
+    /// balances the vault holds are not stranded foreign assets.
+    ShareTokenProtected = 20,
 }
 
 // ─── Contract ────────────────────────────────────────────────────────────────
@@ -790,6 +799,76 @@ impl WrapperContract {
         Ok(())
     }
 
+    /// Rescues a foreign SEP-41 token balance out of the vault.
+    ///
+    /// SEP-41 tokens sent to the contract by mistake would otherwise be stuck:
+    /// nothing in the wrapper's own interface moves a balance that does not
+    /// belong to a shareholder who can sign. This escape hatch lets the admin
+    /// send such a stranded balance to a recovery address.
+    ///
+    /// The ban covers two ids. The token stored at initialization as the
+    /// underlying asset — the one whose contract balance [`WrapperContract::total_assets`]
+    /// reports and whose movements back `unwrap`/`withdraw` — can never be
+    /// rescued, and reverts with [`WrapperError::UnderlyingAssetProtected`].
+    /// This vault's own share token is also rejected with
+    /// [`WrapperError::ShareTokenProtected`], because shares sitting on the
+    /// vault address are not a foreign balance. Every accounted user asset sits
+    /// under the underlying id, so banning it bans the whole of `total_assets`.
+    /// Any *other* token id is rescuable:
+    /// the wrapper never accounts balances of a token it does not wrap, so no
+    /// accounted funds can sit under a foreign id.
+    ///
+    /// # Security
+    ///
+    /// - Admin-gated: reverts unless `caller` holds the `Admin` role (or the
+    ///   implicit all-roles grant the admin carries) via
+    ///   [`admin::require_admin`].
+    /// - `amount` must be positive.
+    /// - Emits a `rescue` event on success.
+    ///
+    /// @notice Sends `amount` of the foreign SEP-41 token at `token` held by
+    ///         this vault to `to`. Admin only; the underlying asset is
+    ///         rejected and can never be rescued.
+    /// @param caller The address requesting the rescue; must hold the Admin role.
+    /// @param token The contract id of the stranded SEP-41 token to rescue.
+    /// @param to The recovery address receiving the rescued balance.
+    /// @param amount The amount of `token` to move to `to`; must be positive.
+    /// @return `Ok(())` on success, [`WrapperError::UnderlyingAssetProtected`]
+    ///         when `token` is the underlying asset, [`WrapperError::InvalidRescueAmount`]
+    ///         when `amount <= 0`, or [`WrapperError::NotInitialized`] when the
+    ///         contract is uninitialized.
+    pub fn rescue_tokens(
+        env: Env,
+        caller: Address,
+        token: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), WrapperError> {
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+
+        let underlying_id = Self::read_underlying(&env);
+        if token == underlying_id {
+            return Err(WrapperError::UnderlyingAssetProtected);
+        }
+        if token == env.current_contract_address() {
+            return Err(WrapperError::ShareTokenProtected);
+        }
+        if amount <= 0 {
+            return Err(WrapperError::InvalidRescueAmount);
+        }
+
+        let client = TokenClient::new(&env, &token);
+        let contract_balance = client.balance(&env.current_contract_address());
+        if contract_balance < amount {
+            return Err(WrapperError::InsufficientBalance);
+        }
+
+        client.transfer(&env.current_contract_address(), &to, &amount);
+        events::emit_rescued(&env, &caller, &token, &to, amount);
+        Ok(())
+    }
+
     /// Returns the address of the underlying SEP-41 token being wrapped.
     pub fn underlying_token(env: Env) -> Address {
         Self::panic_on_err(&env, Self::ensure_initialized(&env));
@@ -1236,7 +1315,6 @@ impl WrapperContract {
         events::emit_unlock_time_cleared(&env, &caller, &user);
         Ok(())
     }
-
     /// Returns the timestamp at which `user`'s deposit becomes withdrawable,
     /// or `None` when no lockup is recorded for the user.
     pub fn get_unlock_time(env: Env, user: Address) -> Option<u64> {

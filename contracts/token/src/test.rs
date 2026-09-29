@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 use crate::{AllowanceData, BatchOp, BcForgeToken, BcForgeTokenClient, DataKey, TokenError};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::Events as _;
@@ -70,12 +71,16 @@ fn test_initialize_emits_expected_events() {
     let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
     assert_eq!(
         data_vec.len(),
-        3,
-        "data should have 3 elements (decimal, name, symbol), confirming admin is in topics"
+        4,
+        "data should have 4 elements (decimal, name, symbol, version), confirming admin is in topics"
     );
 
     let decimal: u32 = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
     assert_eq!(decimal, 7);
+
+    // #924 — every event data tuple ends with the schema version.
+    let version: u32 = data_vec.get(3).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(version, 1, "init event must carry schema version 1");
 }
 
 #[test]
@@ -1051,4 +1056,408 @@ fn test_execute_from_contract_admin_function_rejected_at_enum_level() {
     // Verify BatchOp count of enum variants is strictly limited to 2
     let ops = vec![&env, approve_op, transfer_op];
     assert_eq!(ops.len(), 2);
+}
+
+// ─── rescue_tokens (#921) ────────────────────────────────────────────────────
+
+#[test]
+fn test_rescue_tokens_admin_recovers_foreign_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin) = setup(&env);
+
+    // A foreign SEP-41 token gets registered and "accidentally" sent to the
+    // token contract. Minting it to the token contract's own address makes the
+    // contract hold a balance of a token it does not issue.
+    let foreign_id = env.register(BcForgeToken, ());
+    let foreign = BcForgeTokenClient::new(&env, &foreign_id);
+    let foreign_admin = Address::generate(&env);
+    foreign.initialize(
+        &foreign_admin,
+        &7,
+        &String::from_str(&env, "Foreign"),
+        &String::from_str(&env, "FRG"),
+    );
+    let recovery = Address::generate(&env);
+    foreign.mint(&foreign_admin, &client.address, &5_000);
+
+    assert_eq!(foreign.balance(&client.address), 5_000);
+
+    // Admin rescues the whole stranded balance to the recovery address.
+    client.rescue_tokens(&admin, &foreign_id, &recovery, &5_000);
+
+    assert_eq!(foreign.balance(&client.address), 0);
+    assert_eq!(foreign.balance(&recovery), 5_000);
+
+    // The token's own accounting is untouched: supply, balances, nothing moved.
+    assert_eq!(client.supply(), 0);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _admin) = setup(&env);
+
+    let foreign_id = env.register(BcForgeToken, ());
+    let foreign = BcForgeTokenClient::new(&env, &foreign_id);
+    let foreign_admin = Address::generate(&env);
+    foreign.initialize(
+        &foreign_admin,
+        &7,
+        &String::from_str(&env, "Foreign"),
+        &String::from_str(&env, "FRG"),
+    );
+    foreign.mint(&foreign_admin, &client.address, &5_000);
+
+    let stranger = Address::generate(&env);
+    let recovery = Address::generate(&env);
+
+    let result = client.try_rescue_tokens(&stranger, &foreign_id, &recovery, &5_000);
+    // The admin-crate UnauthorizedRole trap does not decode into TokenError,
+    // so only the error-ness is asserted here.
+    assert!(result.is_err());
+
+    // Nothing moved.
+    assert_eq!(foreign.balance(&client.address), 5_000);
+    assert_eq!(foreign.balance(&recovery), 0);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_own_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, contract_id) = setup_contract(&env);
+    let admin = init_default(&env, &client);
+
+    // Give the contract a balance of its own token so the case is realistic:
+    // this is exactly the user money the hatch must never be able to drain.
+    client.mint(&admin, &admin, &1_000);
+    client.transfer(&admin, &contract_id, &100);
+
+    let recovery = Address::generate(&env);
+    let result = client.try_rescue_tokens(&admin, &contract_id, &recovery, &100);
+    assert_eq!(result, Err(Ok(TokenError::UnknownToken)));
+
+    // The accounted balance is still there.
+    assert_eq!(client.balance(&contract_id), 100);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, admin) = setup(&env);
+
+    let foreign_id = env.register(BcForgeToken, ());
+    let foreign = BcForgeTokenClient::new(&env, &foreign_id);
+    let foreign_admin = Address::generate(&env);
+    foreign.initialize(
+        &foreign_admin,
+        &7,
+        &String::from_str(&env, "Foreign"),
+        &String::from_str(&env, "FRG"),
+    );
+    foreign.mint(&foreign_admin, &client.address, &5_000);
+
+    let recovery = Address::generate(&env);
+    let result = client.try_rescue_tokens(&admin, &foreign_id, &recovery, &0);
+    assert_eq!(result, Err(Ok(TokenError::InvalidAmount)));
+
+    // More than the contract holds reverts with InsufficientBalance.
+    let result = client.try_rescue_tokens(&admin, &foreign_id, &recovery, &6_000);
+    assert_eq!(result, Err(Ok(TokenError::InsufficientBalance)));
+
+    assert_eq!(foreign.balance(&recovery), 0);
+}
+
+// ─── Metadata updates (#911) ─────────────────────────────────────────────────
+
+/// Reads the last emitted event as `(emitter, topics, data)`.
+fn last_event(env: &Env) -> (Address, soroban_sdk::Vec<Val>, Val) {
+    let events = env.events().all();
+    events.get(events.len() - 1).unwrap()
+}
+
+#[test]
+fn test_update_name_success_persists_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    let new_name = String::from_str(&env, "Rebranded Token");
+    client.update_name(&new_name);
+
+    // Requirement 4.1: `upd_name` carries admin, old name, and new name.
+    // (Read immediately: `env.events().all()` reflects the latest call only.)
+    let (emitter, topics, data) = last_event(&env);
+    assert_eq!(emitter, client.address);
+    let topic0: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic0, symbol_short!("upd_name"));
+    let topic1: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic1, admin);
+    let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
+    assert_eq!(data_vec.len(), 2);
+    let old_name: String = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(old_name, String::from_str(&env, "bc-forge Token"));
+    let emitted_new: String = data_vec.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(emitted_new, new_name);
+
+    // Requirement 1.1/1.4: the new name persists across invocations.
+    assert_eq!(client.name(), new_name);
+    assert_eq!(client.name(), new_name);
+}
+
+#[test]
+fn test_update_symbol_success_persists_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    let new_symbol = String::from_str(&env, "NEW");
+    client.update_symbol(&new_symbol);
+
+    // Requirement 4.2: `upd_sym` carries admin, old symbol, and new symbol.
+    // (Read immediately: `env.events().all()` reflects the latest call only.)
+    let (emitter, topics, data) = last_event(&env);
+    assert_eq!(emitter, client.address);
+    let topic0: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic0, symbol_short!("upd_sym"));
+    let topic1: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic1, admin);
+    let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
+    assert_eq!(data_vec.len(), 2);
+    let old_symbol: String = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(old_symbol, String::from_str(&env, "SFG"));
+    let emitted_new: String = data_vec.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(emitted_new, new_symbol);
+
+    // Requirement 2.1/2.4: the new symbol persists across invocations.
+    assert_eq!(client.symbol(), new_symbol);
+    assert_eq!(client.symbol(), new_symbol);
+}
+
+#[test]
+fn test_update_name_accepts_empty_string() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup(&env);
+
+    // Requirement 1.6: an empty string is accepted and stored.
+    client.update_name(&String::from_str(&env, ""));
+    assert_eq!(client.name(), String::from_str(&env, ""));
+}
+
+#[test]
+fn test_update_symbol_accepts_empty_string() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup(&env);
+
+    // Requirement 2.6: an empty string is accepted and stored.
+    client.update_symbol(&String::from_str(&env, ""));
+    assert_eq!(client.symbol(), String::from_str(&env, ""));
+}
+
+#[test]
+fn test_update_name_multiple_calls_stores_latest_value() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup(&env);
+
+    client.update_name(&String::from_str(&env, "First"));
+    client.update_name(&String::from_str(&env, "Second"));
+    assert_eq!(client.name(), String::from_str(&env, "Second"));
+
+    client.update_name(&String::from_str(&env, "Third"));
+    assert_eq!(client.name(), String::from_str(&env, "Third"));
+}
+
+#[test]
+fn test_update_name_on_uninitialized_contract_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(BcForgeToken, ());
+    let client = BcForgeTokenClient::new(&env, &contract_id);
+
+    // Requirement 6.1: uninitialized contracts reject with NotInitialized.
+    let result = client.try_update_name(&String::from_str(&env, "Nope"));
+    assert_eq!(result, Err(Ok(TokenError::NotInitialized)));
+}
+
+#[test]
+fn test_update_symbol_on_uninitialized_contract_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(BcForgeToken, ());
+    let client = BcForgeTokenClient::new(&env, &contract_id);
+
+    // Requirement 6.2: uninitialized contracts reject with NotInitialized.
+    let result = client.try_update_symbol(&String::from_str(&env, "NOPE"));
+    assert_eq!(result, Err(Ok(TokenError::NotInitialized)));
+}
+
+#[test]
+fn test_update_name_rejects_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup(&env);
+
+    // Requirement 1.2/1.3: without the admin's authorization the update fails.
+    env.mock_auths(&[]);
+    let result = client.try_update_name(&String::from_str(&env, "Hacked"));
+    assert!(result.is_err());
+    assert_eq!(client.name(), String::from_str(&env, "bc-forge Token"));
+}
+
+#[test]
+fn test_update_symbol_rejects_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup(&env);
+
+    // Requirement 2.2/2.3: without the admin's authorization the update fails.
+    env.mock_auths(&[]);
+    let result = client.try_update_symbol(&String::from_str(&env, "HACKED"));
+    assert!(result.is_err());
+    assert_eq!(client.symbol(), String::from_str(&env, "SFG"));
+}
+
+#[test]
+fn test_update_name_succeeds_while_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    client.pause(&admin);
+    assert!(env.as_contract(&client.address, || bc_forge_lifecycle::is_paused(&env)));
+
+    // Requirement 11.5: pause state does not block metadata updates.
+    let new_name = String::from_str(&env, "Paused Rename");
+    client.update_name(&new_name);
+    assert_eq!(client.name(), new_name);
+
+    client.unpause(&admin);
+}
+
+#[test]
+fn test_set_metadata_updates_name_and_symbol_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    let name = String::from_str(&env, "Rebranded");
+    let symbol = String::from_str(&env, "RBD");
+    // Same decimals as stored: allowed.
+    client.set_metadata(&admin, &name, &symbol, &7);
+
+    // Issue #911 instruction 4: `upd_meta` carries caller, new name, new symbol.
+    // (Read immediately: `env.events().all()` reflects the latest call only.)
+    let (emitter, topics, data) = last_event(&env);
+    assert_eq!(emitter, client.address);
+    let topic0: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic0, symbol_short!("upd_meta"));
+    let topic1: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic1, admin);
+    let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
+    assert_eq!(data_vec.len(), 2);
+    let emitted_name: String = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(emitted_name, name);
+    let emitted_symbol: String = data_vec.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(emitted_symbol, symbol);
+
+    assert_eq!(client.name(), name);
+    assert_eq!(client.symbol(), symbol);
+    assert_eq!(client.decimals(), 7);
+}
+
+#[test]
+fn test_set_metadata_rejects_decimals_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    // Acceptance criterion: decimals cannot change after initialization.
+    let result = client.try_set_metadata(
+        &admin,
+        &String::from_str(&env, "Shrunk"),
+        &String::from_str(&env, "SHR"),
+        &6,
+    );
+    assert_eq!(result, Err(Ok(TokenError::DecimalsImmutable)));
+
+    // Metadata must be untouched after the rejected call.
+    assert_eq!(client.name(), String::from_str(&env, "bc-forge Token"));
+    assert_eq!(client.symbol(), String::from_str(&env, "SFG"));
+    assert_eq!(client.decimals(), 7);
+}
+
+#[test]
+fn test_set_metadata_rejects_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup(&env);
+    let stranger = Address::generate(&env);
+
+    // Acceptance criterion: an unauthorized caller cannot update metadata.
+    let result = client.try_set_metadata(
+        &stranger,
+        &String::from_str(&env, "Stolen"),
+        &String::from_str(&env, "STL"),
+        &7,
+    );
+    assert!(result.is_err());
+    assert_eq!(client.name(), String::from_str(&env, "bc-forge Token"));
+    assert_eq!(client.symbol(), String::from_str(&env, "SFG"));
+}
+
+#[test]
+fn test_update_metadata_updates_name_and_symbol_and_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    let name = String::from_str(&env, "Updated Both");
+    let symbol = String::from_str(&env, "BOTH");
+    client.update_metadata(&admin, &name, &symbol);
+
+    // (Read immediately: `env.events().all()` reflects the latest call only.)
+    let (emitter, topics, data) = last_event(&env);
+    assert_eq!(emitter, client.address);
+    let topic0: soroban_sdk::Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic0, symbol_short!("upd_meta"));
+    let topic1: Address = topics.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic1, admin);
+    let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
+    assert_eq!(data_vec.len(), 2);
+    let emitted_name: String = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(emitted_name, name);
+    let emitted_symbol: String = data_vec.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(emitted_symbol, symbol);
+
+    assert_eq!(client.name(), name);
+    assert_eq!(client.symbol(), symbol);
+    // update_metadata has no decimals parameter: the scale is untouched.
+    assert_eq!(client.decimals(), 7);
+}
+
+#[test]
+fn test_update_metadata_rejects_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = setup(&env);
+    let stranger = Address::generate(&env);
+
+    let result = client.try_update_metadata(
+        &stranger,
+        &String::from_str(&env, "Stolen"),
+        &String::from_str(&env, "STL"),
+    );
+    assert!(result.is_err());
+    assert_eq!(client.name(), String::from_str(&env, "bc-forge Token"));
+    assert_eq!(client.symbol(), String::from_str(&env, "SFG"));
 }

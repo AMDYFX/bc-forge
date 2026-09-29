@@ -59,9 +59,10 @@ bc-forge/
 └── README.md                      # This file
 ```
 
-> `contracts/compound_fees` and `contracts/flash_loan_guard` are listed in the
-> `exclude` array of the root `Cargo.toml`. They are not part of the built
-> workspace and are not shipped; treat them as experimental.
+> `contracts/yield_vault` is listed in the `exclude` array of the root
+> `Cargo.toml`. It is not part of the built workspace and is not shipped;
+> treat it as experimental. (#923 removed the excluded `compound_fees` stub
+> and promoted `flash_loan_guard` into the workspace — see below.)
 
 ### Architecture
 
@@ -445,6 +446,37 @@ See the [Vault Integration Guide](docs/VAULTS.md) for details on yield-bearing f
 └─────────────────────────────────────────────────┘
 ```
 
+## Documentation Site
+
+The docs site is built with [VitePress](https://vitepress.dev/) from the
+markdown under [`docs/`](docs/), plus API pages generated from TSDoc (TypeDoc)
+and Rust doc comments (`cargo doc`).
+
+### Run the docs site locally
+
+From the repository root:
+
+```bash
+npm install        # once; also installs VitePress and TypeDoc
+npm run docs:gen   # generate the SDK and contract API pages
+npm run docs:dev   # serve at http://localhost:5173
+npm run docs:build # production build into docs/.vitepress/dist
+```
+
+`npm run docs:gen` needs the Rust toolchain because the contract reference is
+generated with `cargo doc`. If you only want the SDK page, run
+`npm run docs:gen:sdk`.
+
+The generated API pages under `docs/api/sdk/` and `docs/public/api/` are not
+checked in. Run `npm run docs:gen` after changing `sdk/src/*` or any contract
+doc comments. CI builds the site on every pull request and uploads the built
+site as a `docs-site` artifact. Deployment is left to the maintainer because no
+docs host is configured in this repository.
+
+The site includes the [spec-to-code traceability matrix](docs/TRACEABILITY.md),
+the [admin key runbook](docs/ADMIN_KEYS.md), and the
+[upgrade guide](docs/UPGRADE_GUIDE.md).
+
 ## Community & first contribution
 
 New here? Follow the [contributor walkthrough](docs/WALKTHROUGH.md) for a
@@ -467,12 +499,48 @@ We welcome contributions! bc-forge is maintained on [drips.network](https://www.
 
 ### Quick Start for Contributors
 
-1. **Browse open issues** — Look for issues labeled `good-first-issue`, `smart-contract`, or `sdk`
+1. **Browse open issues** — Look for issues labeled `good first issue`, `smart-contract`, or `sdk`
 2. **Fork & branch** — Create a branch: `feature/<issue-number>-<short-description>`
 3. **Implement & test** — Write code, add/update tests, ensure `cargo test` and `npm run build` pass
 4. **Submit a PR** — Use the PR template; reference the issue number
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+### How we fund contributors
+
+Contributor work on bc-forge is funded through [Drips](https://www.drips.network).
+Bounties are attached to issues that maintainers have posted for funding, and the
+same three steps apply whether the issue is a first contribution or a larger
+change.
+
+**1. Claim the issue.** Comment on the GitHub issue to claim it before you start
+work. The maintainer posts funded issues on the bc-forge project page on Drips;
+find them from the [open issues](https://github.com/BCPathway/bc-forge/issues?q=is%3Aissue+is%3Aopen)
+list, and start with issues labeled `good first issue` if you are new to the
+codebase.
+
+**2. Open a pull request.** Branch from `main` using the naming convention below,
+make one focused change, and open a PR against `BCPathway/bc-forge:main`. Use
+`Closes #<issue-number>` in the PR description so the issue is linked.
+
+**3. Get paid after merge.** Once a maintainer reviews and merges your PR, the
+reward for the issue is distributed to you through Drips. Rewards are paid after
+merge, not on submission.
+
+To receive a payout, create a profile at [drips.network](https://www.drips.network)
+and link your GitHub account before you open the PR. The linked address is where
+merged work is paid, so set it up first.
+
+| Step | Where | What happens |
+|---|---|---|
+| Claim | The GitHub issue | Comment to claim; avoid two people on one issue |
+| Submit | A PR against `main` | Include `Closes #<issue-number>` |
+| Get paid | Drips | Reward distributed after the PR is merged |
+
+Funding does not change the review bar: every PR is still reviewed against
+[CONTRIBUTING.md](CONTRIBUTING.md), and security reports are handled separately
+and privately as described in [SECURITY.md](SECURITY.md). See also
+[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) for a full end-to-end example.
 
 ### Branch Naming Convention
 
@@ -488,8 +556,17 @@ test/<issue-number>-<description>        # Test improvements
 The following contracts are experimental, untested, or incomplete. **Do not deploy them in a production environment.**
 
 - `contracts/yield_vault`: A yield vault that holds or routes token balances. High risk if deployed with unchecked sources.
-- `contracts/compound_fees`: A fee-compounding vault placeholder with no implementation yet. Excluded from the Cargo workspace, so it is not built or tested in CI.
-- `contracts/flash_loan_guard`: A same-ledger deposit/withdraw guard. Excluded from the Cargo workspace, so it is not built or tested in CI.
+
+### Crate outcomes (#923)
+
+- `contracts/compound_fees` — **removed.** It was a placeholder with no implementation (no contract entry points and no compiled tests), so it was deleted instead of shipping an empty crate. Restore it from git history if a fee-compounding vault is implemented later.
+- `contracts/flash_loan_guard` — **finished and added to the workspace.** See [Flash Loan Guard](#flash-loan-guard-contractsflash_loan_guard) below.
+
+### Flash Loan Guard (`contracts/flash_loan_guard`)
+
+- **Purpose:** a same-ledger reentrancy guard for deposit/withdraw flows. It records the ledger sequence of a user's most recent `deposit` and rejects any `withdraw` attempted in the same ledger block, cutting off flash-loan-funded withdrawal loops.
+- **Who may call it:** any authenticated user — both entry points (`deposit(user)`, `withdraw(user)`) require the authorization of the user address they act on, and the contract holds no admin or privileged role.
+- **CI:** the crate is now part of the Cargo workspace, so `cargo test -p bc-forge-flash-loan-guard` and clippy cover it in CI like every other contract.
 
 ## Security
 
