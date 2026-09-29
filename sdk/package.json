@@ -23,6 +23,9 @@
     "sdk"
   ],
   "license": "MIT",
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "@stellar/stellar-sdk": "^16.0.1"
   },
