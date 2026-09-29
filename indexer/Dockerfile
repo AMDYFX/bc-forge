@@ -6,10 +6,10 @@ RUN apk add --no-cache openssl
 WORKDIR /app
 
 # Copy package manifests
-COPY package.json package-lock.json ./
+COPY package.json package-lock.json* ./
 
 # Install production and build dependencies
-RUN npm ci
+RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 # Copy Prisma schema and source code required for generation and build
 COPY prisma ./prisma

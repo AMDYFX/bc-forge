@@ -1,0 +1,112 @@
+name: Publish Indexer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'indexer/**'
+      - '.github/workflows/publish-indexer.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'indexer/**'
+      - '.github/workflows/publish-indexer.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  smoke-test-and-publish:
+    name: Smoke Test & Publish Indexer
+    runs-on: ubuntu-latest
+    environment: container
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: indexer
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply Prisma migrations to fresh Postgres
+        working-directory: indexer
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/indexer?schema=public
+        run: npx prisma migrate deploy
+
+      - name: Build final indexer Docker image
+        run: docker build -t bc-forge-indexer:smoke ./indexer
+
+      - name: Run final indexer container against fresh Postgres
+        run: |
+          docker run -d \
+            --name indexer-smoke-target \
+            --net=host \
+            -e DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:5432/indexer?schema=public" \
+            -e CONTRACT_ID="CB64D3G7SM2RTH6JSGG34DDTFTRH4CFM6O4X222O7R7MVR3K2TEEEEEE" \
+            -e INDEXER_API_TOKEN="smoke-test-token" \
+            -e PORT=3000 \
+            bc-forge-indexer:smoke
+
+      - name: Poll /health probe until ready
+        run: |
+          echo "Polling indexer /health endpoint..."
+          max_attempts=30
+          attempt=0
+          until curl -s -f http://127.0.0.1:3000/health | grep -q '"status":"ok"'; do
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge "$max_attempts" ]; then
+              echo "::error::Indexer /health probe failed to return ok within timeout"
+              docker logs indexer-smoke-target
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "Indexer /health probe succeeded!"
+
+      - name: Make authenticated /api/v1/stats request
+        run: |
+          echo "Requesting authenticated /api/v1/stats..."
+          response=$(curl -s -f -H "Authorization: Bearer smoke-test-token" http://127.0.0.1:3000/api/v1/stats)
+          echo "Response: $response"
+          if ! echo "$response" | grep -q '"mintCount"'; then
+            echo "::error::Authenticated /api/v1/stats probe returned unexpected payload: $response"
+            docker logs indexer-smoke-target
+            exit 1
+          fi
+          echo "Authenticated /api/v1/stats probe succeeded!"
+
+      - name: Stop smoke test container
+        if: always()
+        run: docker rm -f indexer-smoke-target || true
+
+      - name: Push indexer container image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        run: |
+          echo "Smoke test passed. Container image verified against fresh Postgres."
