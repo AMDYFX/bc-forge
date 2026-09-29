@@ -1,45 +1,62 @@
-name: Publish React to npm
+name: Verify React release
 
+# This workflow is the React release gate, not a publisher.
+#
+# @bc-forge/react is versioned and published by the shared Changesets release in
+# .github/workflows/release.yml (`npx changeset publish`, npm Trusted Publishing
+# via `permissions: id-token: write` + `npm config set provenance true`).
+# Publishing here as well would race that job for the same version number, so
+# this workflow deliberately stops at verifying the artifact and never runs
+# `npm publish`.
 on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
-  publish:
-    name: Publish @bc-forge/react
-    # Component-scoped trigger: only a React release, tagged `react-v<semver>`
-    # (for example `react-v1.0.1`), publishes @bc-forge/react. Every other
-    # component release (`sdk-v*`, `cli-v*`, `indexer-v*`, a bare `v*`) fails
-    # this guard, so the job is skipped and no React version reaches npm.
-    if: ${{ github.event.release.tag_name =~ /^react-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/ }}
+  verify:
+    name: Verify @bc-forge/react artifact
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: react
-    permissions:
-      contents: read
-      id-token: write
+    # No job-level `defaults.run.working-directory`: the SDK build and the
+    # install have to run from the repository root, because this is an npm
+    # workspaces monorepo and only the root package.json declares workspaces.
+    # React-only commands pass `--workspace @bc-forge/react` explicitly.
     steps:
+      # Component-scoped trigger: only a React release, tagged `react-v<semver>`
+      # (for example `react-v1.0.1`), verifies @bc-forge/react. Every other
+      # component release (`sdk-v*`, `cli-v*`, `indexer-v*`, a bare `v*`) fails
+      # this guard, so the job is skipped and no React release is validated.
+      - name: Guard on React release tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^react-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::notice::Release $RELEASE_TAG is not a react-v<semver> tag; skipping the React release gate"
+            exit 78
+          fi
+
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
           cache: 'npm'
-          cache-dependency-path: react/package-lock.json
+          cache-dependency-path: package-lock.json
 
       # Guards against releasing a tag whose version does not match the
-      # manifest, which would publish a different version than the release
-      # advertises and then fail on the next publish of the same number.
+      # manifest, which would advertise a version the release never ships.
       - name: Verify release tag matches package version
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          version="$(node -p "require('./package.json').version")"
+          version="$(node -p "require('./react/package.json').version")"
           expected="react-v$version"
           if [ "$RELEASE_TAG" != "$expected" ]; then
             echo "::error::Release tag '$RELEASE_TAG' does not match react/package.json; bump the version to '$expected' before releasing"
@@ -51,25 +68,28 @@ jobs:
         run: npm ci
 
       # @bc-forge/react compiles against the workspace SDK, so the SDK has to
-      # be built before linting, testing, and building React.
+      # be built from the repository root before linting, testing, and building
+      # React. Running this from the root is what makes `--workspace` resolve.
       - name: Build SDK dependency
         run: npm run build --workspace @bc-forge/sdk
 
       - name: Lint
-        run: npm run lint
+        run: npm run lint --workspace @bc-forge/react
 
       - name: Run tests
-        run: npm test
+        run: npm run test --workspace @bc-forge/react
 
       - name: Build
-        run: npm run build
+        run: npm run build --workspace @bc-forge/react
 
       # Confirms the published artifact carries the CJS, ESM, and declaration
-      # entry points and nothing unbuilt, before anything reaches the registry.
+      # entry points and nothing unbuilt, before the shared Changesets release
+      # hands the version to npm.
       - name: Validate package tarball
         run: |
           set -euo pipefail
-          tarball="$(npm pack --silent)"
+          npm pack --workspace @bc-forge/react --dry-run
+          tarball="$(npm pack --workspace @bc-forge/react --silent)"
           echo "Packed $tarball"
           entries="$(tar -tzf "$tarball")"
           printf '%s\n' "$entries"
@@ -88,8 +108,3 @@ jobs:
             exit 1
           fi
           echo "Tarball contains every declared entry point and no sources"
-
-      - name: Publish to npm
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
