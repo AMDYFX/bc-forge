@@ -31,6 +31,49 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # @bc-forge/react is a Changesets-managed workspace package like the SDK
+      # and the CLI: `npx changeset publish` below is the only place any
+      # bc-forge package reaches npm. There is deliberately no separate React
+      # publisher, so a React release cannot race this job for a version number.
+      #
+      # React ships build output only (`files: ["dist"]`), and `dist/` is
+      # gitignored, so it MUST be built here or the published tarball would
+      # contain nothing but package.json. The SDK is built first because
+      # @bc-forge/react compiles against its type declarations.
+      #
+      # Every command below runs from the repository root: this is an npm
+      # workspaces monorepo, and `--workspace` only resolves against the root
+      # package.json, so a `defaults.run.working-directory: react` would break
+      # the SDK build and silently publish an empty package.
+      - name: Build and validate @bc-forge/react
+        run: |
+          set -euo pipefail
+          npm run build --workspace @bc-forge/sdk
+          npm run build --workspace @bc-forge/react
+          npm run test --workspace @bc-forge/react
+
+          # Confirm the artifact that npm will receive carries every declared
+          # entry point and no unbuilt sources, before any version is claimed.
+          tarball="$(npm pack --workspace @bc-forge/react --silent)"
+          echo "Packed $tarball"
+          entries="$(tar -tzf "$tarball")"
+          printf '%s\n' "$entries"
+          for required in \
+            package/package.json \
+            package/dist/index.js \
+            package/dist/index.mjs \
+            package/dist/index.d.ts; do
+            if ! printf '%s\n' "$entries" | grep -qx "$required"; then
+              echo "::error::$required is missing from the tarball; @bc-forge/react would publish an unusable package"
+              exit 1
+            fi
+          done
+          if printf '%s\n' "$entries" | grep -q '^package/src/'; then
+            echo "::error::The tarball ships unbuilt sources under package/src/"
+            exit 1
+          fi
+          echo "@bc-forge/react artifact is publishable"
+
       - name: Version and publish with Changesets
         id: changesets
         uses: changesets/action@v1
@@ -38,7 +81,6 @@ jobs:
           commit: 'chore: release packages'
           title: 'chore: release packages'
           publish: |
-            npm run build --workspace @bc-forge/sdk
             npm run build --workspace @bc-forge/cli
             npm config set provenance true
             npx changeset publish

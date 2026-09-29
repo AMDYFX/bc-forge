@@ -208,6 +208,54 @@ Rust line coverage is measured with [cargo-tarpaulin](https://github.com/xd00964
 - [ ] README updated if applicable
 - [ ] No unrelated changes included
 
+## 📦 Releases
+
+All npm publishing happens in one place: [`.github/workflows/release.yml`](.github/workflows/release.yml).
+It runs on every push to `main` and uses [Changesets](https://changesets.dev) plus
+npm Trusted Publishing with provenance. **Never add a second workflow that runs
+`npm publish`, and never introduce an `NPM_TOKEN` secret** — a second publisher
+races `changeset publish` for the same version number and defeats provenance.
+
+### Requesting a release
+
+Add a changeset naming the package you changed:
+
+```bash
+npm run changeset
+```
+
+| Package | Changeset | Resulting release |
+| --- | --- | --- |
+| `@bc-forge/sdk` | `"@bc-forge/sdk": patch` | `sdk-v<semver>` |
+| `@bc-forge/cli` | `"@bc-forge/cli": patch` | `cli-v<semver>` |
+| `@bc-forge/react` | `"@bc-forge/react": patch` | `react-v<semver>` |
+
+A React component release is therefore requested exactly like any other: a
+changeset that names `@bc-forge/react`. Changesets applies the release, opens
+its version PR, and `release.yml` publishes `@bc-forge/react` **once** through
+the shared publisher. There is no separate React publish job and no
+`react-v*` tag trigger, so a React release cannot publish on its own schedule and
+an SDK or CLI release can never publish React.
+
+Because `@bc-forge/react` depends on `@bc-forge/sdk`, Changesets bumps React
+alongside an SDK release; that is expected and is the one case where a
+non-React changeset produces a `react-v<semver>` release.
+
+### What the release workflow does
+
+`release.yml` runs from the repository root and, before publishing:
+
+1. `npm ci`
+2. `npm run build --workspace @bc-forge/sdk`, then `--workspace @bc-forge/react`
+3. `npm run test --workspace @bc-forge/react`
+4. `npm pack` the React tarball and assert it contains `dist/index.js`,
+   `dist/index.mjs`, and `dist/index.d.ts`, and no unbuilt `src/`
+
+React ships build output only (`files: ["dist"]`) and `dist/` is gitignored, so
+the build step is required — without it the published package would contain
+nothing but `package.json`. These commands must stay at the repository root:
+`--workspace` only resolves against the root `package.json`.
+
 ## 📐 Architecture Guidelines
 
 ### Smart Contracts
