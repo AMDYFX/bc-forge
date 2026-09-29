@@ -15,8 +15,8 @@
   "author": "bc-forge contributors",
   "license": "MIT",
   "scripts": {
-    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
-    "dev": "tsup src/index.ts --format cjs,esm --watch --dts",
+    "build": "tsup",
+    "dev": "tsup --watch",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "jest"
   },
