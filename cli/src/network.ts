@@ -6,8 +6,14 @@ import { Command, Option } from "commander";
  * Aliases (`pubnet`, `standalone`) are accepted by {@link parseNetworkName}
  * so config files and env vars can use Stellar CLI naming.
  */
-export const NETWORK_CHOICES = ["testnet", "mainnet", "local"] as const;
-export type NetworkName = (typeof NETWORK_CHOICES)[number];
+export const NETWORK_CHOICES = [
+  "testnet",
+  "futurenet",
+  "mainnet",
+  "public",
+  "local",
+] as const;
+export type NetworkName = "testnet" | "futurenet" | "mainnet" | "local";
 
 export interface NetworkPreset {
   name: NetworkName;
@@ -41,6 +47,11 @@ export const NETWORK_PRESETS: Record<NetworkName, NetworkPreset> = {
     rpcUrl: "https://mainnet.sorobanrpc.com",
     networkPassphrase: "Public Global Stellar Network ; September 2015",
   },
+  futurenet: {
+    name: "futurenet",
+    rpcUrl: "https://rpc-futurenet.stellar.org",
+    networkPassphrase: "Test SDF Future Network ; October 2022",
+  },
   local: {
     name: "local",
     rpcUrl: "http://localhost:8000/soroban/rpc",
@@ -50,12 +61,34 @@ export const NETWORK_PRESETS: Record<NetworkName, NetworkPreset> = {
 
 const NETWORK_ALIASES: Record<string, NetworkName> = {
   testnet: "testnet",
+  futurenet: "futurenet",
   mainnet: "mainnet",
   pubnet: "mainnet",
   public: "mainnet",
   local: "local",
   standalone: "local",
 };
+
+const BLOCK_EXPLORER_BASE_URLS: Record<NetworkName, string | undefined> = {
+  testnet: "https://stellar.expert/explorer/testnet",
+  futurenet: "https://stellar.expert/explorer/futurenet",
+  mainnet: "https://stellar.expert/explorer/public",
+  local: undefined,
+};
+
+export function getBlockExplorerBaseUrl(network: string): string | undefined {
+  return BLOCK_EXPLORER_BASE_URLS[parseNetworkName(network)];
+}
+
+export function formatContractIdWithExplorer(
+  contractId: string,
+  network: string,
+  explorerBaseUrl = getBlockExplorerBaseUrl(network),
+): string {
+  if (!explorerBaseUrl) return contractId;
+  const baseUrl = explorerBaseUrl.replace(/\/+$/, "");
+  return `${contractId} (${baseUrl}/contract/${encodeURIComponent(contractId)})`;
+}
 
 export class UnknownNetworkError extends Error {
   constructor(public readonly network: string) {
@@ -136,7 +169,7 @@ export function addNetworkOptions(
 ): Command {
   const networkOption = new Option(
     "-n, --network <name>",
-    "Target network (testnet, mainnet, or local)"
+    "Target network (testnet, futurenet, mainnet, or local)"
   ).choices([...NETWORK_CHOICES]);
 
   if (config.withDefault) {
