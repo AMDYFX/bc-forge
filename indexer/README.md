@@ -1,5 +1,7 @@
 # Indexer microservice
 
+Supported Node, Prisma, Stellar SDK, and package ranges are in the [compatibility matrix](../docs/COMPATIBILITY.md).
+
 ## Quick start (Docker Compose)
 
 The fastest way to run the indexer is the bundled Compose stack, which starts
