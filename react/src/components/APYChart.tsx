@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import React, { useCallback, useEffect, useState } from 'react';
 import { calculateApy } from '@bc-forge/sdk';
 import type { ApyOptions, ApyResult } from '@bc-forge/sdk';

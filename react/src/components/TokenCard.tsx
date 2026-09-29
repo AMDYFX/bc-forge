@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import React, { useEffect, useState } from 'react';
 
 import { useOptionalBcForgeClient } from '../context';

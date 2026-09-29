@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 /**
  * Small formatting and parsing helpers shared by the product components.
  *

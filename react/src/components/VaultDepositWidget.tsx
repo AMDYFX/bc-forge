@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import React, { useEffect, useMemo, useState } from 'react';
 import type { Keypair } from '@stellar/stellar-sdk';
 import type { TransactionResult, WalletAdapter } from '@bc-forge/sdk';

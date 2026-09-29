@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import React, { useState } from 'react';
 import type { Keypair } from '@stellar/stellar-sdk';
 import type { TransactionResult } from '@bc-forge/sdk';
