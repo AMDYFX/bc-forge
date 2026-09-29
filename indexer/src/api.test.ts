@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
 import apiRouter, { createApiRouter, jsonErrorHandler } from './api';
+import { publishIndexerEvent } from './events';
 import { setPrismaClientFactoryForTests } from './lib/prisma';
 
 const API_TOKEN = 'test-indexer-api-token';
@@ -105,13 +106,19 @@ function useMockLists(options: {
   mints?: Row[];
   transfers?: Row[];
   burns?: Row[];
+  holders?: Row[];
+  supplyPoints?: Row[];
   seenMintsArgs?: FindManyArgs[];
   seenTransfersArgs?: FindManyArgs[];
   seenBurnsArgs?: FindManyArgs[];
+  seenHoldersArgs?: FindManyArgs[];
+  seenSupplyPointsArgs?: FindManyArgs[];
 }): void {
   const mints = options.mints ?? [];
   const transfers = options.transfers ?? [];
   const burns = options.burns ?? [];
+  const holders = options.holders ?? [];
+  const supplyPoints = options.supplyPoints ?? [];
   setPrismaClientFactoryForTests(
     () =>
       ({
@@ -127,6 +134,15 @@ function useMockLists(options: {
           findMany: createListMock(burns, options.seenBurnsArgs),
           count: async () => burns.length,
         },
+        holder: {
+          findMany: createListMock(holders, options.seenHoldersArgs),
+        },
+        supplyPoint: {
+          findMany: createListMock(supplyPoints, options.seenSupplyPointsArgs),
+        },
+        webhook: {
+          findMany: async () => [],
+        },
       }) as never,
   );
 }
@@ -140,7 +156,14 @@ function makeRows(count: number, prefix: string, sameTimestamp = false): Row[] {
   }));
 }
 
-const readRoutes = ['/api/v1/mints', '/api/v1/transfers', '/api/v1/burns', '/api/v1/stats'];
+const readRoutes = [
+  '/api/v1/mints',
+  '/api/v1/transfers',
+  '/api/v1/burns',
+  '/api/v1/holders',
+  '/api/v1/supply-history',
+  '/api/v1/stats',
+];
 
 /**
  * Boots a throwaway app that mirrors `index.ts`: the API router mounted at
@@ -153,6 +176,7 @@ async function withServer<T>(
   router = apiRouter,
 ): Promise<T> {
   const app = express();
+  app.use(express.json());
   app.use('/api/v1', router);
   app.get('/health', (req, res) => {
     res.json({ status: 'ok' });
@@ -176,6 +200,130 @@ async function withServer<T>(
 function authHeaders(): Record<string, string> {
   return { authorization: `Bearer ${API_TOKEN}` };
 }
+
+test('webhook registration accepts HTTPS targets and deletion removes the saved row', async () => {
+  const saved = {
+    id: 'hook-1',
+    url: 'https://hooks.example.test/events',
+    createdAt: new Date(Date.UTC(2026, 8, 27)),
+  };
+  const operations: string[] = [];
+
+  setPrismaClientFactoryForTests(
+    () =>
+      ({
+        webhook: {
+          upsert: async (args: {
+            where: { url: string };
+            create: { url: string };
+          }) => {
+            operations.push(`upsert:${args.where.url}`);
+            assert.equal(args.where.url, saved.url);
+            assert.equal(args.create.url, saved.url);
+            return saved;
+          },
+          delete: async (args: { where: { id: string } }) => {
+            operations.push(`delete:${args.where.id}`);
+            assert.equal(args.where.id, saved.id);
+            return saved;
+          },
+          findMany: async () => [],
+        },
+      }) as never,
+  );
+
+  await withServer(async (baseUrl) => {
+    const create = await fetch(`${baseUrl}/api/v1/webhooks`, {
+      method: 'POST',
+      headers: {
+        ...authHeaders(),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ url: saved.url }),
+    });
+    assert.equal(create.status, 201);
+    assert.deepEqual(await create.json(), {
+      data: JSON.parse(JSON.stringify(saved)),
+    });
+
+    const remove = await fetch(`${baseUrl}/api/v1/webhooks/${saved.id}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    assert.equal(remove.status, 204);
+    assert.equal(await remove.text(), '');
+  });
+
+  assert.deepEqual(operations, [`upsert:${saved.url}`, `delete:${saved.id}`]);
+}, createApiRouter());
+
+test('webhook registration rejects non-HTTPS targets', async () => {
+  setPrismaClientFactoryForTests(
+    () =>
+      ({
+        webhook: {
+          upsert: async () => {
+            throw new Error('upsert must not run for invalid URL');
+          },
+          findMany: async () => [],
+        },
+      }) as never,
+  );
+
+  await withServer(async (baseUrl) => {
+    for (const url of ['http://example.test/hook', 'not-a-url', 'https://user:pw@example.test/hook']) {
+      const res = await fetch(`${baseUrl}/api/v1/webhooks`, {
+        method: 'POST',
+        headers: {
+          ...authHeaders(),
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ url }),
+      });
+      assert.equal(res.status, 400, url);
+    }
+  }, createApiRouter());
+});
+
+test('SSE stream emits one newly published indexer event', async () => {
+  useMockLists({});
+
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/v1/events/stream`, {
+      headers: authHeaders(),
+    });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /^text\/event-stream/);
+    assert.ok(response.body);
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+
+    // Consume the initial ": connected" comment before publishing.
+    const first = await reader.read();
+    assert.equal(first.done, false);
+    assert.match(decoder.decode(first.value), /connected/);
+
+    const event = {
+      type: 'mint' as const,
+      data: { id: 'mint-live-1', to: 'GABC', amount: '5', ledger: 999 },
+    };
+    publishIndexerEvent(event);
+
+    let payload = '';
+    for (let i = 0; i < 4 && !payload.includes('mint-live-1'); i += 1) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      payload += decoder.decode(chunk.value, { stream: true });
+    }
+
+    assert.match(payload, /event: mint/);
+    assert.match(payload, /mint-live-1/);
+    assert.match(payload, /"ledger":999/);
+
+    await reader.cancel();
+  }, createApiRouter());
+});
 
 test('read routes return 401 without a bearer token', async () => {
   useMockLists({});
@@ -368,11 +516,19 @@ test('list endpoints default to 50 rows per page', async () => {
   const mints = makeRows(60, 'mint');
   const transfers = makeRows(60, 'transfer');
   const burns = makeRows(60, 'burn');
+  const holders = makeRows(60, 'holder');
+  const supplyPoints = makeRows(60, 'point');
   const seenMintsArgs: FindManyArgs[] = [];
-  useMockLists({ mints, transfers, burns, seenMintsArgs });
+  useMockLists({ mints, transfers, burns, holders, supplyPoints, seenMintsArgs });
 
   await withServer(async (baseUrl) => {
-    for (const route of ['/api/v1/mints', '/api/v1/transfers', '/api/v1/burns']) {
+    for (const route of [
+      '/api/v1/mints',
+      '/api/v1/transfers',
+      '/api/v1/burns',
+      '/api/v1/holders',
+      '/api/v1/supply-history',
+    ]) {
       const res = await fetch(`${baseUrl}${route}`, { headers: authHeaders() });
       assert.equal(res.status, 200);
       const body = (await res.json()) as { data: Row[]; nextCursor: string | null };
@@ -383,24 +539,32 @@ test('list endpoints default to 50 rows per page', async () => {
     // Default page fetches limit + 1 rows to detect the next page.
     assert.equal(seenMintsArgs[0]?.take, 51);
     assert.deepEqual(seenMintsArgs[0]?.orderBy, [{ createdAt: 'desc' }, { id: 'desc' }]);
-  });
+  }, createApiRouter());
 });
 
 test('list endpoints never return more than 100 rows', async () => {
   const mints = makeRows(150, 'mint');
   const transfers = makeRows(150, 'transfer');
   const burns = makeRows(150, 'burn');
-  useMockLists({ mints, transfers, burns });
+  const holders = makeRows(150, 'holder');
+  const supplyPoints = makeRows(150, 'point');
+  useMockLists({ mints, transfers, burns, holders, supplyPoints });
 
   await withServer(async (baseUrl) => {
-    for (const route of ['/api/v1/mints', '/api/v1/transfers', '/api/v1/burns']) {
+    for (const route of [
+      '/api/v1/mints',
+      '/api/v1/transfers',
+      '/api/v1/burns',
+      '/api/v1/holders',
+      '/api/v1/supply-history',
+    ]) {
       const res = await fetch(`${baseUrl}${route}?limit=200`, { headers: authHeaders() });
       assert.equal(res.status, 200);
       const body = (await res.json()) as { data: Row[]; nextCursor: string | null };
       assert.equal(body.data.length, 100, `${route} should cap limit at 100`);
       assert.ok(body.nextCursor, `${route} should page when rows remain`);
     }
-  });
+  }, createApiRouter());
 });
 
 test('non-integer or out-of-range limits return 400', async () => {
@@ -408,14 +572,20 @@ test('non-integer or out-of-range limits return 400', async () => {
 
   await withServer(async (baseUrl) => {
     for (const badLimit of ['0', '-5', 'abc', '1.5', 'NaN']) {
-      for (const route of ['/api/v1/mints', '/api/v1/transfers', '/api/v1/burns']) {
+      for (const route of [
+        '/api/v1/mints',
+        '/api/v1/transfers',
+        '/api/v1/burns',
+        '/api/v1/holders',
+        '/api/v1/supply-history',
+      ]) {
         const res = await fetch(`${baseUrl}${route}?limit=${encodeURIComponent(badLimit)}`, {
           headers: authHeaders(),
         });
         assert.equal(res.status, 400, `${route}?limit=${badLimit} should be rejected`);
       }
     }
-  });
+  }, createApiRouter());
 });
 
 test('callers can walk every row with nextCursor without gaps or duplicates', async () => {
@@ -589,7 +759,13 @@ test('invalid from_ledger returns 400', async () => {
   useMockLists({});
   await withServer(async (baseUrl) => {
     for (const bad of ['-1', 'abc', '1.5', 'NaN']) {
-      for (const route of ['/api/v1/mints', '/api/v1/transfers', '/api/v1/burns']) {
+      for (const route of [
+        '/api/v1/mints',
+        '/api/v1/transfers',
+        '/api/v1/burns',
+        '/api/v1/holders',
+        '/api/v1/supply-history',
+      ]) {
         const res = await fetch(
           `${baseUrl}${route}?from_ledger=${encodeURIComponent(bad)}`,
           { headers: authHeaders() },
@@ -599,7 +775,131 @@ test('invalid from_ledger returns 400', async () => {
         assert.ok(body.error.includes('from_ledger'));
       }
     }
-  });
+  }, createApiRouter());
+});
+
+test('holders returns one row per current holder with its balance', async () => {
+  const holders: Row[] = [
+    { id: 'h-1', address: 'GABC', balance: '600', ledger: 12, createdAt: new Date(Date.UTC(2026, 0, 3)) },
+    { id: 'h-2', address: 'GDEF', balance: '400', ledger: 11, createdAt: new Date(Date.UTC(2026, 0, 2)) },
+  ];
+  const seenHoldersArgs: FindManyArgs[] = [];
+  useMockLists({ holders, seenHoldersArgs });
+
+  await withServer(async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/api/v1/holders`, { headers: authHeaders() });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { data: Row[]; nextCursor: string | null };
+    assert.deepEqual(body, {
+      data: JSON.parse(JSON.stringify(holders)),
+      nextCursor: null,
+    });
+    assert.deepEqual(seenHoldersArgs[0]?.take, 51);
+    assert.equal(body.data[0].address, 'GABC');
+    assert.equal(body.data[0].balance, '600');
+  }, createApiRouter());
+});
+
+test('holders filters by address and combines the filter with pagination', async () => {
+  const target = 'GTARGET';
+  const holders: Row[] = [
+    { id: 'h-1', address: target, balance: '500', ledger: 9, createdAt: new Date(Date.UTC(2026, 0, 3)) },
+    { id: 'h-2', address: 'GOTHER', balance: '100', ledger: 8, createdAt: new Date(Date.UTC(2026, 0, 2)) },
+    { id: 'h-3', address: target, balance: '250', ledger: 7, createdAt: new Date(Date.UTC(2026, 0, 1)) },
+  ];
+  const seenHoldersArgs: FindManyArgs[] = [];
+  useMockLists({ holders, seenHoldersArgs });
+
+  await withServer(async (baseUrl) => {
+    const res = await fetch(
+      `${baseUrl}/api/v1/holders?address=${encodeURIComponent(target)}`,
+      { headers: authHeaders() },
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { data: Row[]; nextCursor: string | null };
+    assert.equal(body.data.length, 2);
+    assert.ok(body.data.every((r) => r.address === target));
+    assert.deepEqual(seenHoldersArgs[0]?.where, { address: target });
+  }, createApiRouter());
+});
+
+test('holders paginates with nextCursor without gaps or duplicates', async () => {
+  const base = Date.UTC(2026, 0, 1);
+  const holders = Array.from({ length: 8 }, (_, i) => ({
+    id: `h-${String(i).padStart(3, '0')}`,
+    address: `G-${String(i).padStart(3, '0')}`,
+    balance: `${i}000`,
+    createdAt: new Date(base + i * 1000),
+  }));
+  useMockLists({ holders });
+
+  await withServer(async (baseUrl) => {
+    const collected: Row[] = [];
+    let cursor: string | null = null;
+    let pages = 0;
+    do {
+      const url = cursor
+        ? `${baseUrl}/api/v1/holders?limit=3&cursor=${encodeURIComponent(cursor)}`
+        : `${baseUrl}/api/v1/holders?limit=3`;
+      const res = await fetch(url, { headers: authHeaders() });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { data: Row[]; nextCursor: string | null };
+      collected.push(...body.data);
+      cursor = body.nextCursor;
+      pages += 1;
+      assert.ok(pages < 10, 'pagination should terminate');
+    } while (cursor !== null);
+
+    assert.equal(pages, 3);
+    assert.deepEqual(
+      collected.map((row) => row.id),
+      sortRows(holders).map((row) => row.id),
+    );
+    assert.equal(new Set(collected.map((row) => row.id)).size, holders.length);
+  }, createApiRouter());
+});
+
+test('supply-history returns timestamped supply points', async () => {
+  const supplyPoints: Row[] = [
+    { id: 'p-1', timestamp: new Date(Date.UTC(2026, 0, 3)), supply: '1000', ledger: 12, txHash: 't1', createdAt: new Date(Date.UTC(2026, 0, 3)) },
+    { id: 'p-2', timestamp: new Date(Date.UTC(2026, 0, 2)), supply: '600', ledger: 11, txHash: 't2', createdAt: new Date(Date.UTC(2026, 0, 2)) },
+    { id: 'p-3', timestamp: new Date(Date.UTC(2026, 0, 1)), supply: '400', ledger: 10, txHash: 't3', createdAt: new Date(Date.UTC(2026, 0, 1)) },
+  ];
+  useMockLists({ supplyPoints });
+
+  await withServer(async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/api/v1/supply-history`, { headers: authHeaders() });
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { data: Row[]; nextCursor: string | null };
+    assert.deepEqual(body, {
+      data: JSON.parse(JSON.stringify(supplyPoints)),
+      nextCursor: null,
+    });
+    assert.equal(body.data[0].supply, '1000');
+    assert.equal(body.data[0].txHash, 't1');
+  }, createApiRouter());
+});
+
+test('supply-history filters by from_ledger', async () => {
+  const supplyPoints: Row[] = [
+    { id: 'p-1', timestamp: new Date(Date.UTC(2026, 0, 3)), supply: '1000', ledger: 15, createdAt: new Date(Date.UTC(2026, 0, 3)) },
+    { id: 'p-2', timestamp: new Date(Date.UTC(2026, 0, 2)), supply: '600', ledger: 12, createdAt: new Date(Date.UTC(2026, 0, 2)) },
+    { id: 'p-3', timestamp: new Date(Date.UTC(2026, 0, 1)), supply: '400', ledger: 10, createdAt: new Date(Date.UTC(2026, 0, 1)) },
+  ];
+  const seenSupplyPointsArgs: FindManyArgs[] = [];
+  useMockLists({ supplyPoints, seenSupplyPointsArgs });
+
+  await withServer(async (baseUrl) => {
+    const res = await fetch(
+      `${baseUrl}/api/v1/supply-history?from_ledger=12`,
+      { headers: authHeaders() },
+    );
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { data: Row[]; nextCursor: string | null };
+    assert.equal(body.data.length, 2, 'should include ledger 12 and 15');
+    assert.ok(body.data.every((r) => (r.ledger as number) >= 12));
+    assert.deepEqual(seenSupplyPointsArgs[0]?.where, { ledger: { gte: 12 } });
+  }, createApiRouter());
 });
 
 // ─── Rate limiting ────────────────────────────────────────────────────────
