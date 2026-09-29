@@ -20,12 +20,50 @@ in the npm organization that owns the scope:
    - Organization or user: `BCPathway`
    - Repository: `bc-forge`
    - Workflow filename: `release.yml`
-   - Environment name: leave empty unless a GitHub Environment is added to the release job later
+   - Environment name: `npm`
 4. Save. Repeat for the other two packages.
 5. Confirm **Access** is public for each package. The changesets config sets `"access": "public"`.
 6. After the next release, open the package's **Versions** page and confirm the version shows a provenance attestation. The statement is also linked from the GitHub Actions run of `Release packages`.
 
 Provenance is requested by `npm config set provenance true` before `changeset publish`. Pull requests do not publish.
+
+## Protected environments and workflow permissions
+
+Release publish workflows enforce least-privilege permissions and require deployment through protected GitHub Environments.
+
+### Named GitHub Environments
+
+1. **`npm` Environment**:
+   - Referenced by [`release.yml`](../.github/workflows/release.yml), [`publish-sdk.yml`](../.github/workflows/publish-sdk.yml), and [`publish-cli.yml`](../.github/workflows/publish-cli.yml).
+   - Controls access to npm publishing secrets (`NPM_TOKEN`) and OIDC trusted publisher context.
+2. **`container` Environment**:
+   - Referenced by [`publish-release-manifest.yml`](../.github/workflows/publish-release-manifest.yml).
+   - Controls container image builds, checksum manifest generation, and GitHub release asset attachments.
+
+### GitHub Repository Settings & Required Reviewers
+
+The following environment settings must be configured under **Settings → Environments** in the GitHub repository interface:
+
+- **Required Reviewers**: Enable required reviewers on both `npm` and `container` environments to mandate explicit approval from designated release maintainers before publish jobs can run.
+- **Deployment Branches**: Restrict deployment branches to `main` for `release.yml` and tag/release triggers for release event workflows.
+- **Environment Secrets**: Limit scope-sensitive secrets (such as fallback `NPM_TOKEN`) to the `npm` environment rather than repository-wide scope where applicable.
+
+### Workflow Permissions Inventory
+
+All publish workflows set top-level `permissions: {}` to ensure any unspecified GitHub Actions permission defaults to `none`. Each job explicitly declares only the least-privilege permissions required:
+
+- **`release.yml`** (`release` job):
+  - `contents: write` (push release commits/tags)
+  - `id-token: write` (mint OIDC tokens for npm provenance)
+  - `pull-requests: write` (open and update version PRs)
+- **`publish-sdk.yml`** (`publish` job):
+  - `contents: read` (checkout code)
+  - `id-token: write` (npm provenance attestation)
+- **`publish-cli.yml`** (`publish` job):
+  - `contents: read` (checkout code)
+  - `id-token: write` (npm provenance attestation)
+- **`publish-release-manifest.yml`** (`manifest` job):
+  - `contents: write` (upload release assets and checksums to GitHub Release)
 
 ## Fallback secret and rotation
 
