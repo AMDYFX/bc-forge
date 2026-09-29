@@ -1,94 +1,146 @@
-import os
+#!/usr/bin/env python3
+"""Build checksums.txt and manifest.json for a GitHub Release.
+
+The workflow passes the artifacts it just built. This script does not walk the
+checkout: a release checkout has no compiled WASM or npm tarballs until those
+steps run, and a walk would hash unrelated files.
+"""
+
+from __future__ import annotations
+
+import argparse
 import hashlib
 import json
-import argparse
+import sys
+import tempfile
+from pathlib import Path
 
-def sha256_checksum(file_path: str) -> str:
-    """Compute SHA-256 checksum of a file."""
-    h = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
-def find_artifacts(root: str) -> list:
-    """Find release artifacts: wasm files and npm package tarballs.
-    Returns list of (component, file_path) tuples.
-    """
-    artifacts = []
-    for dirpath, _, filenames in os.walk(root):
-        for name in filenames:
-            if name.endswith('.wasm'):
-                # Component inferred from contract name (parent directory)
-                component = os.path.basename(os.path.normpath(dirpath))
-                artifacts.append((component, os.path.join(dirpath, name)))
-            elif name.endswith('.tgz'):
-                # npm package tarball, component from top-level directory name (cli/sdk/react)
-                # Find which workspace it belongs to
-                parts = dirpath.split(os.sep)
-                if "cli" in parts:
-                    component = "cli"
-                elif "sdk" in parts:
-                    component = "sdk"
-                elif "react" in parts:
-                    component = "react"
-                else:
-                    component = "unknown"
-                artifacts.append((component, os.path.join(dirpath, name)))
-    return artifacts
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-def load_version(component: str) -> str:
-    """Load version string for a component.
-    For npm packages, read package.json. For wasm contracts, read Cargo.toml.
-    """
-    try:
-        if component in ("cli", "sdk", "react"):
-            pkg_path = os.path.join(component, "package.json")
-            with open(pkg_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data.get("version", "0.0.0")
-        else:
-            # Assume Rust crate, look for Cargo.toml in the component directory
-            cargo_path = os.path.join(component, "Cargo.toml")
-            if os.path.isfile(cargo_path):
-                for line in open(cargo_path, "r", encoding="utf-8"):
-                    if line.strip().startswith("version"):
-                        # line like version = "0.1.0"
-                        parts = line.split('=')
-                        if len(parts) == 2:
-                            return parts[1].strip().strip('"')
-        return "0.0.0"
-    except Exception:
-        return "0.0.0"
 
-def main():
-    parser = argparse.ArgumentParser(description="Generate release checksum manifest")
-    parser.add_argument("--root", default=".", help="Repository root directory")
-    parser.add_argument("--output-dir", default="release_assets", help="Directory to write checksum and manifest files")
-    parser.add_argument("--version", default=os.getenv("GITHUB_REF_NAME", "0.0.0"), help="Version identifier (e.g., git tag)")
+def load_image_digest(metadata_path: Path) -> str:
+    data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    digest = data.get("containerimage.digest") or data.get("digest")
+    if not isinstance(digest, str) or not digest.startswith("sha256:"):
+        raise SystemExit(
+            f"{metadata_path} has no containerimage.digest; the indexer image was not built"
+        )
+    return digest
+
+
+def write_manifest(output_dir: Path, entries: list[dict]) -> None:
+    if not entries:
+        raise SystemExit("refusing to publish an empty release manifest")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    checksums_path = output_dir / "checksums.txt"
+    lines = []
+    for entry in entries:
+        if "filename" not in entry:
+            continue
+        lines.append(f"{entry['checksum']}  {entry['filename']}")
+    checksums_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+    print(f"Wrote {checksums_path} and {manifest_path} ({len(entries)} entries)")
+
+
+def self_test() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        artifact = root / "sample.tgz"
+        artifact.write_bytes(b"bc-forge")
+        metadata = root / "image.json"
+        metadata.write_text(
+            json.dumps({"containerimage.digest": "sha256:" + "ab" * 32}),
+            encoding="utf-8",
+        )
+        out = root / "out"
+        entries = collect_entries(
+            files=[("sdk", "1.2.3", artifact)],
+            images=[("indexer", "1.0.0", "bc-forge-indexer", metadata)],
+        )
+        write_manifest(out, entries)
+        checksums = (out / "checksums.txt").read_text(encoding="utf-8")
+        expected = sha256_file(artifact)
+        if not checksums.startswith(expected + "  sample.tgz"):
+            raise SystemExit("self-test checksum mismatch")
+        manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+        if manifest[1]["digest"] != "sha256:" + "ab" * 32:
+            raise SystemExit("self-test image digest mismatch")
+    print("self-test ok")
+
+
+def collect_entries(
+    files: list[tuple[str, str, Path]],
+    images: list[tuple[str, str, str, Path]],
+) -> list[dict]:
+    entries: list[dict] = []
+    for component, version, path in files:
+        if not path.is_file():
+            raise SystemExit(f"missing release file: {path}")
+        checksum = sha256_file(path)
+        entries.append(
+            {
+                "component": component,
+                "version": version,
+                "filename": path.name,
+                "checksum": checksum,
+            }
+        )
+    for component, version, image, metadata in images:
+        digest = load_image_digest(metadata)
+        entries.append(
+            {
+                "component": component,
+                "version": version,
+                "image": image,
+                "digest": digest,
+                "checksum": digest.removeprefix("sha256:"),
+            }
+        )
+    return entries
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", default="release_assets")
+    parser.add_argument(
+        "--file",
+        action="append",
+        nargs=3,
+        metavar=("COMPONENT", "VERSION", "PATH"),
+        default=[],
+        help="Downloadable file to hash. Repeat for each artifact.",
+    )
+    parser.add_argument(
+        "--image",
+        action="append",
+        nargs=4,
+        metavar=("COMPONENT", "VERSION", "NAME", "METADATA"),
+        default=[],
+        help="Indexer image. METADATA is a docker buildx metadata file.",
+    )
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
-    artifacts = find_artifacts(args.root)
+    if args.self_test:
+        self_test()
+        return
 
-    checksums_path = os.path.join(args.output_dir, "checksums.txt")
-    manifest_path = os.path.join(args.output_dir, "manifest.json")
+    files = [(item[0], item[1], Path(item[2])) for item in args.file]
+    images = [(item[0], item[1], item[2], Path(item[3])) for item in args.image]
+    entries = collect_entries(files, images)
+    write_manifest(Path(args.output_dir), entries)
 
-    manifest = []
-    with open(checksums_path, "w", encoding="utf-8") as chk_f:
-        for component, file_path in artifacts:
-            checksum = sha256_checksum(file_path)
-            rel_path = os.path.relpath(file_path, args.root).replace(os.sep, "/")
-            chk_f.write(f"{checksum}  {rel_path}\n")
-            manifest.append({
-                "component": component,
-                "version": args.version,
-                "file": rel_path,
-                "checksum": checksum,
-            })
-    with open(manifest_path, "w", encoding="utf-8") as mf:
-        json.dump(manifest, mf, indent=2)
-    print(f"Generated {checksums_path} and {manifest_path}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        sys.exit(0)
