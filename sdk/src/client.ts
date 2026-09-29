@@ -58,7 +58,7 @@ import {
   hashToScVal,
 } from './utils';
 
-import { SimulationError, RPCError } from './errors';
+import { SimulationError, RPCError, SignerRequiredError, ContractError, parseContractError } from './errors';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -71,6 +71,10 @@ export interface bcForgeClientConfig {
   contractId: string;
   /** Optional wallet adapter for browser-based signing flows */
   walletAdapter?: WalletAdapter;
+  /** Max retry attempts for transient sequence or fee errors (default: 3) */
+  maxRetryAttempts?: number;
+  /** Maximum fee cap in stroops for fee bump retries (default: 10000000) */
+  maxFeeCap?: string | number | bigint;
 }
 
 export interface TransactionResult {
@@ -144,6 +148,10 @@ export class bcForgeClient {
   private server: SorobanRpc.Server;
   private contract: Contract;
   private walletAdapter?: WalletAdapter;
+  private maxRetryAttempts?: number;
+  private maxFeeCap?: string | number | bigint;
+  private readCache = new Map<string, { value: unknown; ledger: number }>();
+  private cachedLedgerSequence: number = 0;
 
   constructor(config: bcForgeClientConfig) {
     this.rpcUrl = config.rpcUrl;
@@ -152,11 +160,18 @@ export class bcForgeClient {
     this.server = new SorobanRpc.Server(this.rpcUrl);
     this.contract = new Contract(this.contractId);
     this.walletAdapter = config.walletAdapter;
+    this.maxRetryAttempts = config.maxRetryAttempts;
+    this.maxFeeCap = config.maxFeeCap;
   }
 
   /** Replace or set the wallet adapter at runtime */
   setWalletAdapter(adapter?: WalletAdapter) {
     this.walletAdapter = adapter;
+  }
+
+  /** The wallet adapter configured on this client, if any. */
+  getWalletAdapter(): WalletAdapter | undefined {
+    return this.walletAdapter;
   }
 
   /** Connect the configured wallet adapter (if any) */
@@ -172,6 +187,57 @@ export class bcForgeClient {
     await this.walletAdapter.disconnect();
   }
 
+  // ─── Ledger Cache Helpers ──────────────────────────────────────────────────
+
+  /** Get current ledger sequence number */
+  async getLatestLedgerSequence(): Promise<number> {
+    if (this.cachedLedgerSequence > 0) {
+      return this.cachedLedgerSequence;
+    }
+    try {
+      const latest = await this.server.getLatestLedger();
+      return latest.sequence;
+    } catch {
+      return this.cachedLedgerSequence;
+    }
+  }
+
+  /** Set ledger sequence manually for testing or mock control */
+  setLedgerSequence(sequence: number): void {
+    this.cachedLedgerSequence = sequence;
+  }
+
+  /** Clear all cached read responses */
+  clearCache(): void {
+    this.readCache.clear();
+  }
+
+  /** Helper to execute a ledger-cached read query */
+  private async getCachedRead<T>(
+    method: string,
+    strArgs: string[],
+    fetcher: () => Promise<T>,
+  ): Promise<T> {
+    const currentLedger = await this.getLatestLedgerSequence();
+    const cacheKey = `${this.contractId}:${method}:${strArgs.join(':')}:${currentLedger}`;
+
+    const existing = this.readCache.get(cacheKey);
+    if (existing && existing.ledger === currentLedger) {
+      return existing.value as T;
+    }
+
+    // Invalidate entries from old ledgers
+    for (const [k, entry] of this.readCache.entries()) {
+      if (entry.ledger !== currentLedger) {
+        this.readCache.delete(k);
+      }
+    }
+
+    const val = await fetcher();
+    this.readCache.set(cacheKey, { value: val, ledger: currentLedger });
+    return val;
+  }
+
   // ─── Read-Only Queries ───────────────────────────────────────────────────
 
   /**
@@ -181,8 +247,10 @@ export class bcForgeClient {
    * @returns Token balance as a fixed-scale decimal string.
    */
   async getBalance(address: string): Promise<bigint> {
-    const result = await this.queryContract('balance', [addressToScVal(address)]);
-    return BigInt(scValToNative(result) as string | number | bigint);
+    return this.getCachedRead('balance', [address], async () => {
+      const result = await this.queryContract('balance', [addressToScVal(address)]);
+      return BigInt(scValToNative(result) as string | number | bigint);
+    });
   }
 
   /**
@@ -223,11 +291,13 @@ export class bcForgeClient {
    * Get the spending allowance from `owner` to `spender`.
    */
   async getAllowance(owner: string, spender: string): Promise<bigint> {
-    const result = await this.queryContract('allowance', [
-      addressToScVal(owner),
-      addressToScVal(spender),
-    ]);
-    return BigInt(scValToNative(result) as string | number | bigint);
+    return this.getCachedRead('allowance', [owner, spender], async () => {
+      const result = await this.queryContract('allowance', [
+        addressToScVal(owner),
+        addressToScVal(spender),
+      ]);
+      return BigInt(scValToNative(result) as string | number | bigint);
+    });
   }
 
   /**
@@ -382,16 +452,30 @@ export class bcForgeClient {
   }
 
   /**
+   * Helper to resolve a valid signer public key or throw a SignerRequiredError.
+   */
+  private getSignerAddress(source?: Keypair): string {
+    const address = source?.publicKey() ?? this.walletAdapter?.publicKey;
+    if (!address) {
+      throw new SignerRequiredError(
+        'A signer (Keypair or connected WalletAdapter) is required to execute write transactions',
+      );
+    }
+    return address;
+  }
+
+  /**
    * Mint tokens to an address. Admin-only.
    *
    * @param to     - Recipient address
    * @param amount - Number of tokens to mint
    * @param source - Admin keypair
    */
-  async mint(to: string, amount: bigint, source: Keypair): Promise<TransactionResult> {
+  async mint(to: string, amount: bigint, source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
     return this.invokeContract(
       'mint',
-      [addressToScVal(source.publicKey()), addressToScVal(to), i128ToScVal(amount)],
+      [addressToScVal(signerAddress), addressToScVal(to), i128ToScVal(amount)],
       source,
     );
   }
@@ -402,7 +486,8 @@ export class bcForgeClient {
    * @param recipients - Array of recipient objects
    * @param source     - Admin keypair
    */
-  async batchMint(recipients: BatchMintRecipient[], source: Keypair): Promise<TransactionResult> {
+  async batchMint(recipients: BatchMintRecipient[], source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
     const recipientScVals = recipients.map(({ to, amount }) =>
       xdr.ScVal.scvMap([
         new xdr.ScMapEntry({
@@ -418,7 +503,7 @@ export class bcForgeClient {
     const recipientsVec = xdr.ScVal.scvVec(recipientScVals);
     return this.invokeContract(
       'batch_mint',
-      [addressToScVal(source.publicKey()), recipientsVec],
+      [addressToScVal(signerAddress), recipientsVec],
       source,
     );
   }
@@ -433,7 +518,7 @@ export class bcForgeClient {
   async batchTransfer(
     from: string,
     recipients: BatchMintRecipient[],
-    source: Keypair,
+    source?: Keypair,
   ): Promise<TransactionResult> {
     const recipientsVec = xdr.ScVal.scvVec(
       recipients.map(({ to, amount }) =>
@@ -561,8 +646,9 @@ export class bcForgeClient {
    *
    * @param source - Admin or Pauser keypair
    */
-  async pause(source: Keypair): Promise<TransactionResult> {
-    return this.invokeContract('pause', [addressToScVal(source.publicKey())], source);
+  async pause(source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
+    return this.invokeContract('pause', [addressToScVal(signerAddress)], source);
   }
 
   /**
@@ -570,8 +656,63 @@ export class bcForgeClient {
    *
    * @param source - Admin or Pauser keypair
    */
-  async unpause(source: Keypair): Promise<TransactionResult> {
-    return this.invokeContract('unpause', [addressToScVal(source.publicKey())], source);
+  async unpause(source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
+    return this.invokeContract('unpause', [addressToScVal(signerAddress)], source);
+  }
+
+  /**
+   * Build an unsigned pause transaction for offline signing.
+   *
+   * @param sourcePublicKey - Pauser/admin public key that will sign the transaction
+   * @returns Unsigned transaction XDR string
+   */
+  async buildPauseTx(sourcePublicKey: string): Promise<string> {
+    return buildUnsignedTransaction(
+      this.rpcUrl,
+      this.networkPassphrase,
+      this.contractId,
+      'pause',
+      [addressToScVal(sourcePublicKey)],
+      sourcePublicKey,
+    );
+  }
+
+  /**
+   * Build an unsigned unpause transaction for offline signing.
+   *
+   * @param sourcePublicKey - Pauser/admin public key that will sign the transaction
+   * @returns Unsigned transaction XDR string
+   */
+  async buildUnpauseTx(sourcePublicKey: string): Promise<string> {
+    return buildUnsignedTransaction(
+      this.rpcUrl,
+      this.networkPassphrase,
+      this.contractId,
+      'unpause',
+      [addressToScVal(sourcePublicKey)],
+      sourcePublicKey,
+    );
+  }
+
+  /**
+   * Submit an already-signed transaction XDR (for example one signed on a
+   * hardware wallet or offline machine).
+   *
+   * @param txXdr - Signed transaction XDR string
+   */
+  async submitSignedTransaction(txXdr: string): Promise<TransactionResult> {
+    const response = await submitTransaction(this.rpcUrl, txXdr, {
+      networkPassphrase: this.networkPassphrase,
+    });
+    if (response.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+      return {
+        success: true,
+        hash: response.txHash,
+        returnValue: response.returnValue ? scValToNative(response.returnValue) : undefined,
+      };
+    }
+    return { success: false, hash: response.txHash };
   }
 
   // ─── Offline Transaction Builders ──────────────────────────────────────────
@@ -1011,10 +1152,11 @@ export class bcForgeClient {
    * @param address - Address to receive the role
    * @param source  - SuperAdmin/Admin keypair
    */
-  async grantRole(role: Role, address: string, source: Keypair): Promise<TransactionResult> {
+  async grantRole(role: Role, address: string, source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
     return this.invokeContract(
       'grant_role',
-      [addressToScVal(source.publicKey()), roleToScVal(role), addressToScVal(address)],
+      [addressToScVal(signerAddress), roleToScVal(role), addressToScVal(address)],
       source,
     );
   }
@@ -1026,10 +1168,11 @@ export class bcForgeClient {
    * @param address - Address to revoke the role from
    * @param source  - SuperAdmin/Admin keypair
    */
-  async revokeRole(role: Role, address: string, source: Keypair): Promise<TransactionResult> {
+  async revokeRole(role: Role, address: string, source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
     return this.invokeContract(
       'revoke_role',
-      [addressToScVal(source.publicKey()), roleToScVal(role), addressToScVal(address)],
+      [addressToScVal(signerAddress), roleToScVal(role), addressToScVal(address)],
       source,
     );
   }
@@ -1050,7 +1193,7 @@ export class bcForgeClient {
    * @throws {ContractError} If the address is the zero address (`InvalidAddress`)
    * @throws {ContractError} If the role variant is unrecognized (`InvalidRole`)
    */
-  async grantMinter(address: string, source: Keypair): Promise<TransactionResult> {
+  async grantMinter(address: string, source?: Keypair): Promise<TransactionResult> {
     return this.grantRole(Role.Minter, address, source);
   }
 
@@ -1070,7 +1213,7 @@ export class bcForgeClient {
    * @throws {ContractError} If the role variant is unrecognized (`InvalidRole`)
    * @throws {ContractError} If the address does not hold the Minter role (`RoleNotHeld`)
    */
-  async revokeMinter(address: string, source: Keypair): Promise<TransactionResult> {
+  async revokeMinter(address: string, source?: Keypair): Promise<TransactionResult> {
     return this.revokeRole(Role.Minter, address, source);
   }
 
@@ -1080,10 +1223,11 @@ export class bcForgeClient {
    * @param adminContractId - The deployed Admin Contract ID
    * @param source          - Admin keypair
    */
-  async setAdminContract(adminContractId: string, source: Keypair): Promise<TransactionResult> {
+  async setAdminContract(adminContractId: string, source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
     return this.invokeContract(
       'set_admin_contract',
-      [addressToScVal(source.publicKey()), addressToScVal(adminContractId)],
+      [addressToScVal(signerAddress), addressToScVal(adminContractId)],
       source,
     );
   }
@@ -1094,10 +1238,11 @@ export class bcForgeClient {
    * @param tokenContractId - The deployed Token Contract ID
    * @param source          - Admin keypair
    */
-  async setDependentToken(tokenContractId: string, source: Keypair): Promise<TransactionResult> {
+  async setDependentToken(tokenContractId: string, source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
     return this.invokeContract(
       'set_token',
-      [addressToScVal(source.publicKey()), addressToScVal(tokenContractId)],
+      [addressToScVal(signerAddress), addressToScVal(tokenContractId)],
       source,
     );
   }
@@ -1117,10 +1262,11 @@ export class bcForgeClient {
    * @throws {ContractError} If the address is the zero address (`InvalidAddress`)
    * @throws {ContractError} If the role variant is unrecognized (`InvalidRole`)
    */
-  async grantSuperAdmin(address: string, source: Keypair): Promise<TransactionResult> {
+  async grantSuperAdmin(address: string, source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
     return this.invokeContract(
       'grant_role',
-      [addressToScVal(source.publicKey()), roleToScVal(Role.SuperAdmin), addressToScVal(address)],
+      [addressToScVal(signerAddress), roleToScVal(Role.SuperAdmin), addressToScVal(address)],
       source,
     );
   }
@@ -1137,10 +1283,11 @@ export class bcForgeClient {
    * @throws {ContractError} If the caller lacks SuperAdmin role (`UnauthorizedRole`)
    * @throws {ContractError} If the address does not hold the SuperAdmin role (`RoleNotHeld`)
    */
-  async revokeSuperAdmin(address: string, source: Keypair): Promise<TransactionResult> {
+  async revokeSuperAdmin(address: string, source?: Keypair): Promise<TransactionResult> {
+    const signerAddress = this.getSignerAddress(source);
     return this.invokeContract(
       'revoke_role',
-      [addressToScVal(source.publicKey()), roleToScVal(Role.SuperAdmin), addressToScVal(address)],
+      [addressToScVal(signerAddress), roleToScVal(Role.SuperAdmin), addressToScVal(address)],
       source,
     );
   }
@@ -1162,12 +1309,13 @@ export class bcForgeClient {
    * @param source     - Admin keypair that signs both transactions
    * @returns Results of both the `migrate_admin` and `grant_role` transactions
    */
-  async initRbac(superAdmin: string, source: Keypair): Promise<RbacInitResult> {
+  async initRbac(superAdmin: string, source?: Keypair): Promise<RbacInitResult> {
+    const signerAddress = this.getSignerAddress(source);
     const migrate = await this.invokeContract('migrate_admin', [], source);
     const grant = await this.invokeContract(
       'grant_role',
       [
-        addressToScVal(source.publicKey()),
+        addressToScVal(signerAddress),
         roleToScVal(Role.SuperAdmin),
         addressToScVal(superAdmin),
       ],
@@ -1182,7 +1330,7 @@ export class bcForgeClient {
    * @param address - Address to grant the Pauser role to
    * @param source  - Admin keypair
    */
-  async grantPauser(address: string, source: Keypair): Promise<TransactionResult> {
+  async grantPauser(address: string, source?: Keypair): Promise<TransactionResult> {
     return this.grantRole(Role.Pauser, address, source);
   }
 
@@ -1192,7 +1340,7 @@ export class bcForgeClient {
    * @param address - Address to revoke the Pauser role from
    * @param source  - Admin keypair
    */
-  async revokePauser(address: string, source: Keypair): Promise<TransactionResult> {
+  async revokePauser(address: string, source?: Keypair): Promise<TransactionResult> {
     return this.revokeRole(Role.Pauser, address, source);
   }
 
@@ -1331,9 +1479,15 @@ export class bcForgeClient {
       try {
         return await fn();
       } catch (error) {
+        if (
+          error instanceof ContractError ||
+          error instanceof SimulationError ||
+          error instanceof SignerRequiredError
+        ) {
+          throw error;
+        }
         lastError = error;
         // Only retry on certain errors (e.g., network/RPC errors)
-        // For now, we retry on any error that isn't a known terminal error
         if (i < retries - 1) {
           await new Promise((resolve) => setTimeout(resolve, 1000 * (i + 1)));
         }
@@ -1364,6 +1518,8 @@ export class bcForgeClient {
         const simulated = await this.server.simulateTransaction(tx);
 
         if (SorobanRpc.Api.isSimulationError(simulated)) {
+          const parsed = parseContractError(simulated.error, method);
+          if (parsed) throw parsed;
           throw new SimulationError(`Query failed: ${simulated.error}`, simulated.error);
         }
 
@@ -1373,7 +1529,7 @@ export class bcForgeClient {
 
         return simulated.result.retval;
       } catch (error: unknown) {
-        if (error instanceof SimulationError) throw error;
+        if (error instanceof ContractError || error instanceof SimulationError) throw error;
         throw new RPCError('RPC call failed', error);
       }
     });
@@ -1389,6 +1545,16 @@ export class bcForgeClient {
   ): Promise<TransactionResult> {
     return this.withRetry(async () => {
       try {
+        const submitOpts = {
+          maxAttempts: this.maxRetryAttempts,
+          maxFeeCap: this.maxFeeCap,
+          sourceKeypair: source,
+          networkPassphrase: this.networkPassphrase,
+          contractId: this.contractId,
+          method,
+          args,
+        };
+
         // If an explicit Keypair is provided, use the existing signed builder
         if (source) {
           const txXdr = await buildInvokeTransaction(
@@ -1400,9 +1566,10 @@ export class bcForgeClient {
             source,
           );
 
-          const response = await submitTransaction(this.rpcUrl, txXdr);
+          const response = await submitTransaction(this.rpcUrl, txXdr, submitOpts);
 
           if (response.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+            this.clearCache();
             return {
               success: true,
               hash: (response as unknown as { hash: string }).hash,
@@ -1417,9 +1584,14 @@ export class bcForgeClient {
         }
 
         // Otherwise, attempt to use the configured wallet adapter
-        if (!this.walletAdapter) throw new Error('No signing source provided');
-        if (!this.walletAdapter.connected || !this.walletAdapter.publicKey)
-          throw new Error('Wallet adapter not connected');
+        if (!this.walletAdapter) {
+          throw new SignerRequiredError(
+            'A signer (Keypair or connected WalletAdapter) is required to execute write transactions',
+          );
+        }
+        if (!this.walletAdapter.connected || !this.walletAdapter.publicKey) {
+          throw new SignerRequiredError('Wallet adapter is not connected');
+        }
 
         const unsignedXdr = await buildUnsignedTransaction(
           this.rpcUrl,
@@ -1430,11 +1602,14 @@ export class bcForgeClient {
           this.walletAdapter.publicKey,
         );
 
-        const signedXdr = await this.walletAdapter.signTransaction(unsignedXdr);
+        const signedXdr = await this.walletAdapter.signTransaction(unsignedXdr, {
+          networkPassphrase: this.networkPassphrase,
+        });
 
-        const response = await submitTransaction(this.rpcUrl, signedXdr);
+        const response = await submitTransaction(this.rpcUrl, signedXdr, submitOpts);
 
         if (response.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+          this.clearCache();
           return {
             success: true,
             hash: (response as unknown as { hash: string }).hash,
@@ -1447,8 +1622,14 @@ export class bcForgeClient {
           hash: (response as unknown as { hash: string }).hash,
         };
       } catch (error: unknown) {
-        // Don't retry on simulation errors (usually logic errors)
-        if (error instanceof SimulationError) throw error;
+        // Don't retry on simulation errors or missing signer errors
+        if (
+          error instanceof ContractError ||
+          error instanceof SimulationError ||
+          error instanceof SignerRequiredError
+        ) {
+          throw error;
+        }
         throw error;
       }
     });
@@ -1463,6 +1644,7 @@ export class bcForgeClient {
     const response = await responsePromise;
 
     if (response.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
+      this.clearCache();
       return {
         success: true,
         hash: (response as unknown as { hash: string }).hash,

@@ -1,4 +1,4 @@
-use crate::{VaultState, WrapperContract, WrapperContractClient, WrapperError};
+use crate::{CooldownConfig, VaultState, WrapperContract, WrapperContractClient, WrapperError};
 use bc_forge_token::{BcForgeToken, BcForgeTokenClient};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::Ledger;
@@ -2297,4 +2297,223 @@ fn test_lockup_enforcement_full_deposit_withdraw_cycle() {
     assert_eq!(tokens_out, 1_000_000);
     assert_eq!(wrapper.balance(&user), 0);
     assert_eq!(underlying.balance(&user), 10_000_000);
+}
+
+// ─── rescue_tokens (#921) ────────────────────────────────────────────────────
+
+#[test]
+fn test_rescue_tokens_admin_recovers_foreign_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (wrapper, _underlying, admin, _user, _wrapper_id) = setup(&env);
+
+    // A foreign token nobody accounts for gets sent to the vault by mistake.
+    let foreign_id = env.register(BcForgeToken, ());
+    let foreign = BcForgeTokenClient::new(&env, &foreign_id);
+    let foreign_admin = Address::generate(&env);
+    foreign.initialize(
+        &foreign_admin,
+        &7,
+        &String::from_str(&env, "Foreign"),
+        &String::from_str(&env, "FRG"),
+    );
+    foreign.mint(&foreign_admin, &wrapper.address, &7_000);
+
+    let recovery = Address::generate(&env);
+
+    // Admin rescues the stranded balance.
+    wrapper.rescue_tokens(&admin, &foreign_id, &recovery, &7_000);
+
+    assert_eq!(foreign.balance(&wrapper.address), 0);
+    assert_eq!(foreign.balance(&recovery), 7_000);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_non_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (wrapper, _underlying, _admin, _user, _wrapper_id) = setup(&env);
+
+    let foreign_id = env.register(BcForgeToken, ());
+    let foreign = BcForgeTokenClient::new(&env, &foreign_id);
+    let foreign_admin = Address::generate(&env);
+    foreign.initialize(
+        &foreign_admin,
+        &7,
+        &String::from_str(&env, "Foreign"),
+        &String::from_str(&env, "FRG"),
+    );
+    foreign.mint(&foreign_admin, &wrapper.address, &7_000);
+
+    let stranger = Address::generate(&env);
+    let recovery = Address::generate(&env);
+
+    let result = wrapper.try_rescue_tokens(&stranger, &foreign_id, &recovery, &7_000);
+    // The admin-crate UnauthorizedRole trap does not decode into WrapperError,
+    // so only the error-ness is asserted here.
+    assert!(result.is_err());
+
+    // Nothing moved.
+    assert_eq!(foreign.balance(&wrapper.address), 7_000);
+    assert_eq!(foreign.balance(&recovery), 0);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_underlying_asset() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (wrapper, underlying, admin, user) = setup_and_fund(&env);
+
+    // The user wraps, so the vault now holds accounted underlying assets:
+    // exactly the balance total_assets() reports and withdrawals draw from.
+    wrapper.wrap(&user, &1_000);
+    assert_eq!(wrapper.total_assets(), 1_000);
+
+    let recovery = Address::generate(&env);
+
+    // The underlying asset can never be rescued, even though the vault holds it.
+    let result = wrapper.try_rescue_tokens(&admin, &underlying.address, &recovery, &1_000);
+    assert_eq!(result, Err(Ok(WrapperError::UnderlyingAssetProtected)));
+
+    // The accounted assets are untouched.
+    assert_eq!(wrapper.total_assets(), 1_000);
+    assert_eq!(underlying.balance(&wrapper.address), 1_000);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_wrapper_shares_held_by_wrapper() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (wrapper, _underlying, admin, user) = setup_and_fund(&env);
+    wrapper.wrap(&user, &1_000);
+    let supply_before = wrapper.supply();
+    wrapper.transfer(&user, &wrapper.address, &400);
+
+    let recovery = Address::generate(&env);
+    let result = wrapper.try_rescue_tokens(&admin, &wrapper.address, &recovery, &400);
+    assert_eq!(result, Err(Ok(WrapperError::ShareTokenProtected)));
+
+    assert_eq!(wrapper.supply(), supply_before);
+    assert_eq!(wrapper.balance(&wrapper.address), 400);
+    assert_eq!(wrapper.balance(&recovery), 0);
+}
+
+#[test]
+fn test_rescue_tokens_rejects_invalid_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (wrapper, _underlying, admin, _user, _wrapper_id) = setup(&env);
+
+    let foreign_id = env.register(BcForgeToken, ());
+    let foreign = BcForgeTokenClient::new(&env, &foreign_id);
+    let foreign_admin = Address::generate(&env);
+    foreign.initialize(
+        &foreign_admin,
+        &7,
+        &String::from_str(&env, "Foreign"),
+        &String::from_str(&env, "FRG"),
+    );
+    foreign.mint(&foreign_admin, &wrapper.address, &7_000);
+
+    let recovery = Address::generate(&env);
+
+    let result = wrapper.try_rescue_tokens(&admin, &foreign_id, &recovery, &0);
+    assert_eq!(result, Err(Ok(WrapperError::InvalidRescueAmount)));
+
+    // More than the vault holds reverts with InsufficientBalance.
+    let result = wrapper.try_rescue_tokens(&admin, &foreign_id, &recovery, &8_000);
+    assert_eq!(result, Err(Ok(WrapperError::InsufficientBalance)));
+
+    assert_eq!(foreign.balance(&recovery), 0);
+}
+
+// ─── Cooldown and Emergency Cap Tests ───────────────────────────────────────
+
+#[test]
+fn test_cooldown_off_preserves_immediate_withdrawals() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (wrapper, underlying, _admin, user) = setup_and_fund(&env);
+
+    wrapper.deposit(&user, &1_000_000);
+    assert_eq!(wrapper.balance(&user), 1_000_000);
+
+    let tokens_out = wrapper.withdraw(&user, &1_000_000);
+    assert_eq!(tokens_out, 1_000_000);
+    assert_eq!(wrapper.balance(&user), 0);
+    assert_eq!(wrapper.supply(), 0);
+    assert_eq!(underlying.balance(&user), 10_000_000);
+}
+
+#[test]
+fn test_cooldown_on_delays_payout_until_release_ledger() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (wrapper, underlying, admin, user) = setup_and_fund(&env);
+
+    let config = CooldownConfig {
+        enabled: true,
+        cooldown_ledgers: 10,
+        emergency_cap: 0,
+        emergency_window_ledgers: 0,
+    };
+    wrapper.set_cooldown_config(&admin, &config);
+
+    wrapper.deposit(&user, &1_000_000);
+
+    let res = wrapper.withdraw(&user, &1_000_000);
+    assert_eq!(res, 0);
+
+    assert_eq!(wrapper.balance(&user), 0);
+    assert_eq!(underlying.balance(&user), 9_000_000);
+
+    let queued = wrapper.get_queued_withdrawal(&user).unwrap();
+    assert_eq!(queued.amount, 1_000_000);
+    assert_eq!(queued.release_ledger, env.ledger().sequence() + 10);
+
+    let claim_early = wrapper.try_claim_withdrawal(&user);
+    assert_eq!(claim_early, Err(Ok(WrapperError::CooldownNotMet)));
+
+    env.ledger().set_sequence_number(queued.release_ledger + 1);
+
+    let claimed_tokens = wrapper.claim_withdrawal(&user);
+    assert_eq!(claimed_tokens, 1_000_000);
+    assert_eq!(underlying.balance(&user), 10_000_000);
+
+    let claim_again = wrapper.try_claim_withdrawal(&user);
+    assert_eq!(claim_again, Err(Ok(WrapperError::NoQueuedWithdrawal)));
+}
+
+#[test]
+fn test_emergency_cap_blocks_excessive_withdrawals_in_window() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (wrapper, _underlying, admin, user) = setup_and_fund(&env);
+
+    let config = CooldownConfig {
+        enabled: false,
+        cooldown_ledgers: 0,
+        emergency_cap: 500_000,
+        emergency_window_ledgers: 100,
+    };
+    wrapper.set_cooldown_config(&admin, &config);
+
+    wrapper.deposit(&user, &1_000_000);
+
+    let first = wrapper.withdraw(&user, &400_000);
+    assert_eq!(first, 400_000);
+
+    let second = wrapper.try_withdraw(&user, &200_000);
+    assert_eq!(second, Err(Ok(WrapperError::EmergencyCapExceeded)));
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + 105);
+
+    let third = wrapper.withdraw(&user, &200_000);
+    assert_eq!(third, 200_000);
 }

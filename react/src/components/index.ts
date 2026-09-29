@@ -6,3 +6,6 @@ export type { BadgeProps, BadgeVariant, BadgeSize } from './Badge';
 
 export { Dropdown } from './Dropdown';
 export type { DropdownProps, DropdownVariant, DropdownSize, DropdownItem } from './Dropdown';
+
+export { ConnectWallet } from './ConnectWallet';
+export type { ConnectWalletProps } from './ConnectWallet';

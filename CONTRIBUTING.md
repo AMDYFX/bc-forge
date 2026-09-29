@@ -18,6 +18,9 @@ bc-forge is maintained on [drips.network](https://www.drips.network). As a contr
 3. Browse the bc-forge project for available issues
 4. Claim and work on issues that match your skills
 
+The linked account is where rewards are paid, so set it up before opening your
+PR. The README summarizes the same flow in [How we fund contributors](README.md#how-we-fund-contributors).
+
 ## 🛠️ Development Setup
 
 ### Prerequisites
@@ -50,13 +53,33 @@ npm install
 npm run build
 ```
 
+### Keeping Your Fork in Sync & Resetting Local Clones
+
+If upstream history is updated or rewritten:
+
+```bash
+# Fetch latest upstream changes
+git fetch upstream
+
+# Reset your local main branch cleanly onto upstream main
+git checkout main
+git reset --hard upstream/main
+
+# If you have an active feature branch, rebase it onto the updated main:
+git checkout <your-branch>
+git rebase upstream/main
+```
+
+> **Note on Test Snapshots**: Soroban test snapshots (`contracts/admin/test_snapshots/`) are generated test artifacts. They are ignored in `.gitignore` and must never be committed to git history.
+
+
 ## 📋 Workflow
 
 ### 1. Find an Issue
 
 - Check the [Issues](https://github.com/BCPathway/bc-forge/issues) tab
 - Look for labels:
-  - `good-first-issue` — Perfect for newcomers
+  - `good first issue` — Perfect for newcomers
   - `smart-contract` — Rust/Soroban contract work
   - `sdk` — TypeScript SDK improvements
   - `documentation` — Docs and guides
@@ -138,6 +161,10 @@ cargo test --tests
 cd sdk && npm run build
 ```
 
+Running `cargo test -p bc-forge-admin` regenerates `contracts/admin/test_snapshots/` locally; these Soroban snapshots are generated outputs and must remain untracked.
+
+CI also runs `cargo audit` against `Cargo.lock` in the Dependency Audit job: if any dependency matches a known RustSec advisory, the check fails and blocks the merge. Upgrade the affected crate (or, only when the advisory genuinely cannot apply, add a narrowly scoped, commented ignore) before opening your PR.
+
 ### 5. Pull Request Process
 
 1. **Push your branch** to your fork
@@ -153,6 +180,7 @@ cd sdk && npm run build
 - [ ] Branch follows naming convention
 - [ ] Code passes `cargo fmt` and `cargo clippy`
 - [ ] All tests pass (`cargo test --tests`)
+- [ ] `cargo audit` reports no advisories on `Cargo.lock`
 - [ ] SDK compiles (`npm run build` in `sdk/`)
 - [ ] New functions have doc comments
 - [ ] README updated if applicable
@@ -175,6 +203,26 @@ cd sdk && npm run build
 - **bcForgeClient** — The single entry point for all operations
 - **Read-only methods** — Use simulation (no transaction needed)
 - **Write methods** — Build, simulate, sign, submit, poll
+
+### Generated Contract Bindings (#926)
+
+The SDK includes auto-generated TypeScript bindings in `sdk/src/generated/`
+produced by `stellar contract bindings typescript`. These must be regenerated
+whenever the Rust token contract changes:
+
+```bash
+# From the sdk/ directory
+npm run generate:bindings
+
+# Or from the repo root
+bash scripts/generate-sdk-bindings.sh
+```
+
+**Prerequisites:** Rust toolchain with `wasm32-unknown-unknown` target and
+[Stellar CLI 22.0+](https://developers.stellar.org/docs/tools/cli).
+
+CI will fail if the committed bindings are stale. Always regenerate and commit
+after contract changes.
 
 ## ❓ Questions?
 

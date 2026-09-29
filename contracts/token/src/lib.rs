@@ -27,7 +27,8 @@ use bc_forge_admin as admin;
 use bc_forge_ttl as ttl;
 use soroban_sdk::token::TokenInterface;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String, TryIntoVal,
+    Val, Vec,
 };
 
 /// A mint recipient with an amount.
@@ -39,6 +40,18 @@ pub struct Recipient {
     pub to: Address,
     /// The amount to mint or transfer.
     pub amount: i128,
+}
+
+/// An inner operation that can be executed in a batch via [`BcForgeToken::execute_from_contract`].
+///
+/// @title BatchOp
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub enum BatchOp {
+    /// Approve a spender to spend tokens on behalf of the wallet: `(spender, amount, expiration_ledger)`.
+    Approve(Address, i128, u32),
+    /// Transfer tokens to a recipient: `(to, amount)`.
+    Transfer(Address, i128),
 }
 
 #[derive(Clone)]
@@ -74,6 +87,8 @@ pub enum DataKey {
     FeeConfig,
     /// Fee exemptions keyed by address.
     FeeExemption(Address),
+    /// Nonce for contract wallet batch execution replay protection.
+    Nonce(Address),
 }
 
 /// Fee configuration for dynamic contract fee charging.
@@ -104,7 +119,7 @@ pub struct FeeExemption {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[contracttype]
-struct AllowanceData {
+pub(crate) struct AllowanceData {
     amount: i128,
     expiration_ledger: u32,
 }
@@ -149,6 +164,20 @@ pub enum TokenError {
     MaxSupplyExceeded = 10,
     AlreadyPaused = 11,
     NotPaused = 12,
+    /// Batch operations list exceeds maximum allowed cap (8).
+    BatchTooLarge = 13,
+    /// Batch operations list is empty.
+    BatchEmpty = 14,
+    /// Batch payload execution max ledger sequence has expired.
+    PayloadExpired = 15,
+    /// Batch payload nonce has already been used or is invalid.
+    PayloadReplayed = 16,
+    /// `rescue_tokens` was called on this contract's own token id. The token
+    /// contract can never rescue itself: its balances are accounted user
+    /// funds, not stranded foreign assets.
+    UnknownToken = 17,
+    /// Metadata would change `decimals` after initialization (issue #911).
+    DecimalsImmutable = 18,
 }
 
 #[contract]
@@ -219,14 +248,56 @@ impl BcForgeToken {
         ttl::extend_instance_ttl(env);
     }
 
-    fn read_allowance_data(env: &Env, from: &Address, spender: &Address) -> AllowanceData {
+    fn remove_legacy_allowance_exp(env: &Env, from: &Address, spender: &Address) {
+        let exp_key = DataKey::AllowanceExp(from.clone(), spender.clone());
+        if env.storage().persistent().has(&exp_key) {
+            env.storage().persistent().remove(&exp_key);
+        }
+    }
+
+    fn persist_allowance_data(env: &Env, from: &Address, spender: &Address, data: &AllowanceData) {
         env.storage()
             .persistent()
-            .get(&DataKey::Allowance(from.clone(), spender.clone()))
-            .unwrap_or(AllowanceData {
+            .set(&DataKey::Allowance(from.clone(), spender.clone()), data);
+        Self::remove_legacy_allowance_exp(env, from, spender);
+    }
+
+    /// Reads allowance state, migrating legacy `(Allowance: i128, AllowanceExp: u32)`
+    /// storage into a single [`AllowanceData`] entry when needed.
+    fn read_allowance_data(env: &Env, from: &Address, spender: &Address) -> AllowanceData {
+        let allowance_key = DataKey::Allowance(from.clone(), spender.clone());
+        let exp_key = DataKey::AllowanceExp(from.clone(), spender.clone());
+
+        let allowance_value = env.storage().persistent().get::<_, Val>(&allowance_key);
+        if let Some(value) = allowance_value.as_ref() {
+            if let Ok(data) = value.try_into_val(env) {
+                if env.storage().persistent().has(&exp_key) {
+                    Self::remove_legacy_allowance_exp(env, from, spender);
+                }
+                return data;
+            }
+        }
+
+        let legacy_amount = allowance_value.and_then(|value| value.try_into_val(env).ok());
+        let legacy_exp = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&exp_key)
+            .unwrap_or(0);
+        let has_legacy = legacy_amount.is_some() || env.storage().persistent().has(&exp_key);
+        if !has_legacy {
+            return AllowanceData {
                 amount: 0,
                 expiration_ledger: 0,
-            })
+            };
+        }
+
+        let data = AllowanceData {
+            amount: legacy_amount.unwrap_or(0),
+            expiration_ledger: legacy_exp,
+        };
+        Self::persist_allowance_data(env, from, spender, &data);
+        data
     }
 
     fn allowance_amount(env: &Env, from: &Address, spender: &Address) -> i128 {
@@ -247,9 +318,7 @@ impl BcForgeToken {
             amount,
             expiration_ledger: exp,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Allowance(from.clone(), spender.clone()), &data);
+        Self::persist_allowance_data(env, from, spender, &data);
     }
 
     fn move_balance(
@@ -330,6 +399,19 @@ impl BcForgeToken {
             .instance()
             .remove(&DataKey::FeeExemption(address.clone()));
         ttl::extend_instance_ttl(env);
+    }
+
+    fn read_nonce(env: &Env, address: &Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Nonce(address.clone()))
+            .unwrap_or(0)
+    }
+
+    fn write_nonce(env: &Env, address: &Address, nonce: u64) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Nonce(address.clone()), &nonce);
     }
 }
 
@@ -413,6 +495,7 @@ impl BcForgeToken {
         name: String,
         symbol: String,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         // Ensure only the deployer can initialize the contract
         env.current_contract_address().require_auth();
 
@@ -451,6 +534,7 @@ impl BcForgeToken {
     /// @param amount The amount of tokens to mint.
     /// @return `Ok(())` on success, or an error if the minter is unauthorized, the contract is paused, or the amount is invalid.
     pub fn mint(env: Env, minter: Address, to: Address, amount: i128) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         if amount <= 0 {
             return Err(TokenError::InvalidAmount);
         }
@@ -480,6 +564,7 @@ impl BcForgeToken {
         minter: Address,
         recipients: Vec<Recipient>,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         reentrancy_guard!(&env, "batch_mint_guard", {
             Self::ensure_initialized(&env)?;
             Self::ensure_not_paused(&env)?;
@@ -584,6 +669,7 @@ impl BcForgeToken {
     /// @param max_supply The new maximum supply cap.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized or the value is negative.
     pub fn set_max_supply(env: Env, caller: Address, max_supply: i128) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         if max_supply < 0 {
             return Err(TokenError::InvalidAmount);
@@ -601,11 +687,75 @@ impl BcForgeToken {
     /// @param new_admin The address to become the new admin.
     /// @return `Ok(())` on success, or an error if the caller is not the current admin.
     pub fn transfer_ownership(env: Env, new_admin: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         let current_admin = admin::get_admin(&env);
         admin::require_admin(&env, &current_admin);
         admin::set_admin(&env, &new_admin);
         events::emit_ownership_transferred(&env, &current_admin, &new_admin);
+        Ok(())
+    }
+
+    /// Rescues a foreign SEP-41 token balance out of the contract.
+    ///
+    /// SEP-41 tokens sent to the contract by mistake would otherwise be stuck:
+    /// nothing in the token's own interface moves a balance that does not
+    /// belong to a holder who can sign. This escape hatch lets the admin send
+    /// such a stranded balance to a recovery address.
+    ///
+    /// The ban list is deliberately minimal and exact. Rescuing this
+    /// contract's *own* token id is rejected with [`TokenError::UnknownToken`]
+    /// (`rescue_tokens(&env.current_contract_address(), ..)`), because every
+    /// balance in this contract's own ledger entry is accounted user money:
+    /// draining it through the rescue hatch would be indistinguishable from
+    /// theft. Any *other* token id is rescuable, which is the point of the
+    /// hatch: by construction the contract never accounts balances of a token
+    /// it does not issue, so no accounted funds can sit under a foreign id.
+    ///
+    /// # Security
+    ///
+    /// - Admin-gated: reverts unless `caller` holds the `Admin` role (or the
+    ///   implicit all-roles grant the admin carries) via
+    ///   [`admin::require_admin`].
+    /// - `amount` must be positive.
+    /// - Emits a `rescue` event on success.
+    ///
+    /// @notice Sends `amount` of the foreign SEP-41 token at `token` held by
+    ///         this contract to `to`. Admin only; this contract's own token id
+    ///         is rejected.
+    /// @param caller The address requesting the rescue; must hold the Admin role.
+    /// @param token The contract id of the stranded SEP-41 token to rescue.
+    /// @param to The recovery address receiving the rescued balance.
+    /// @param amount The amount of `token` to move to `to`; must be positive.
+    /// @return `Ok(())` on success, [`TokenError::UnknownToken`] when `token` is
+    ///         this contract's own id, [`TokenError::InvalidAmount`] when
+    ///         `amount <= 0`, or [`TokenError::NotInitialized`] when the
+    ///         contract is uninitialized.
+    pub fn rescue_tokens(
+        env: Env,
+        caller: Address,
+        token: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), TokenError> {
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+
+        if token == env.current_contract_address() {
+            return Err(TokenError::UnknownToken);
+        }
+        if amount <= 0 {
+            return Err(TokenError::InvalidAmount);
+        }
+
+        let client = soroban_sdk::token::TokenClient::new(&env, &token);
+        let contract_balance = client.balance(&env.current_contract_address());
+        if contract_balance < amount {
+            return Err(TokenError::InsufficientBalance);
+        }
+
+        client.transfer(&env.current_contract_address(), &to, &amount);
+        events::emit_rescued(&env, &caller, &token, &to, amount);
         Ok(())
     }
 
@@ -616,6 +766,7 @@ impl BcForgeToken {
     /// @param caller The address requesting the pause; must be admin or hold the Pauser role.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized or already paused.
     pub fn pause(env: Env, caller: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
 
         // #769: role-based check instead of the legacy address-equality
@@ -643,6 +794,7 @@ impl BcForgeToken {
     /// @param caller The address requesting the unpause; must be admin or hold the Pauser role.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized or not paused.
     pub fn unpause(env: Env, caller: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
 
         // #769: role-based check, mirroring `pause` — admin or Pauser role.
@@ -673,6 +825,7 @@ impl BcForgeToken {
         upgrader: Address,
         new_wasm_hash: BytesN<32>,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_super_admin(&env, &upgrader);
         events::emit_upgraded(&env, &upgrader, &new_wasm_hash);
@@ -687,6 +840,7 @@ impl BcForgeToken {
     /// @param caller The address requesting the pause.
     /// @return `Ok(())` on success.
     pub fn pause_as(env: Env, caller: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         if bc_forge_lifecycle::is_paused(&env) {
             return Err(TokenError::AlreadyPaused);
@@ -703,6 +857,7 @@ impl BcForgeToken {
     /// @param caller The address requesting the unpause.
     /// @return `Ok(())` on success.
     pub fn unpause_as(env: Env, caller: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         if !bc_forge_lifecycle::is_paused(&env) {
             return Err(TokenError::NotPaused);
@@ -721,6 +876,7 @@ impl BcForgeToken {
     /// @param config The fee configuration to set.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized or the config contains negative values.
     pub fn set_fee_config(env: Env, caller: Address, config: FeeConfig) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_admin(&env, &caller);
         if config.base_fee < 0 || config.max_fee < 0 {
@@ -749,6 +905,7 @@ impl BcForgeToken {
     /// @param treasury The address to set as the treasury.
     /// @return `Ok(())` on success, or an error if the caller is unauthorized.
     pub fn set_treasury(env: Env, caller: Address, treasury: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_admin(&env, &caller);
         Self::write_treasury(&env, &treasury);
@@ -780,6 +937,7 @@ impl BcForgeToken {
         address: Address,
         exemption: FeeExemption,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_admin(&env, &caller);
         Self::write_fee_exemption(&env, &address, &exemption);
@@ -799,6 +957,7 @@ impl BcForgeToken {
         caller: Address,
         address: Address,
     ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
         Self::ensure_initialized(&env)?;
         admin::require_admin(&env, &caller);
         Self::delete_fee_exemption(&env, &address);
@@ -850,28 +1009,101 @@ impl BcForgeToken {
         admin::execute_upgrade(&env, executor, proposal_id, wasm_hash)
     }
 
-    /// Returns the contract instance TTL and counts of known singleton storage keys.
+    /// Returns the current replay-protection nonce for an address.
     ///
-    /// @notice Returns instance TTL and storage key count without requiring authorization.
-    /// @return [`admin::StorageInfo`] struct containing `instance_ttl` and `instance_keys`.
-    pub fn get_storage_info(env: Env) -> admin::StorageInfo {
-        admin::get_storage_info(&env)
+    /// @notice Returns the nonce for `address` used in `execute_from_contract`.
+    /// @param env The Soroban environment.
+    /// @param address The address to query the nonce for.
+    /// @return The current nonce value.
+    pub fn get_nonce(env: Env, address: Address) -> u64 {
+        Self::extend_instance_ttl_for_call(&env);
+        Self::panic_on_err(&env, Self::ensure_initialized(&env));
+        Self::read_nonce(&env, &address)
     }
 
-    /// Returns the remaining instance TTL in ledgers until expiry.
+    /// Executes a batch of authorized operations (approve and transfer) on behalf of `from`.
     ///
-    /// @notice Returns the contract instance TTL without requiring authorization.
-    /// @return The remaining instance TTL in ledgers.
-    pub fn get_instance_ttl(env: Env) -> u32 {
-        admin::get_instance_ttl(&env)
-    }
+    /// @notice Executes a bounded list of inner operations (approve and transfer only) in a single authorized invocation.
+    /// @dev Hard cap of 8 operations per batch. Requires `from` to authenticate.
+    ///      Replay-protected via `nonce` (stored in persistent storage) and `max_ledger` (ledger expiry).
+    ///      Admin-only functions are strictly unreachable as `BatchOp` is bounded to `Approve` and `Transfer`.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `from` - The wallet authorizing the batch operations.
+    /// * `operations` - Vector of inner operations (`BatchOp::Approve` or `BatchOp::Transfer`), up to 8 operations.
+    /// * `nonce` - Expected sequential transaction nonce for `from`.
+    /// * `max_ledger` - Maximum ledger sequence number until which this payload is valid (0 = no expiry).
+    ///
+    /// # Panics
+    /// Panics with contract error if initialized/paused checks or authentication fail.
+    ///
+    /// # Events
+    /// Emits `approve` and `transfer` events for each executed operation, and `exec_btch` for the batch.
+    ///
+    /// # Errors
+    /// Returns [`TokenError::BatchEmpty`] if `operations` is empty.
+    /// Returns [`TokenError::BatchTooLarge`] if `operations.len() > 8`.
+    /// Returns [`TokenError::PayloadExpired`] if `max_ledger > 0` and current ledger > `max_ledger`.
+    /// Returns [`TokenError::PayloadReplayed`] if `nonce` does not match the stored nonce for `from`.
+    /// Returns [`TokenError::InvalidAmount`] if any operation amount is invalid.
+    pub fn execute_from_contract(
+        env: Env,
+        from: Address,
+        operations: Vec<BatchOp>,
+        nonce: u64,
+        max_ledger: u32,
+    ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
+        reentrancy_guard!(&env, "execute_from_contract_guard", {
+            Self::ensure_initialized(&env)?;
+            Self::ensure_not_paused(&env)?;
 
-    /// Returns the count of known singleton admin storage keys.
-    ///
-    /// @notice Returns the count of known singleton admin storage keys.
-    /// @return The number of present singleton instance keys.
-    pub fn get_storage_key_counts(env: Env) -> u32 {
-        admin::get_storage_key_counts(&env)
+            if operations.is_empty() {
+                return Err(TokenError::BatchEmpty);
+            }
+            if operations.len() > 8 {
+                return Err(TokenError::BatchTooLarge);
+            }
+
+            if max_ledger > 0 && env.ledger().sequence() > max_ledger {
+                return Err(TokenError::PayloadExpired);
+            }
+
+            from.require_auth();
+
+            let current_nonce = Self::read_nonce(&env, &from);
+            if nonce != current_nonce {
+                return Err(TokenError::PayloadReplayed);
+            }
+            Self::write_nonce(&env, &from, current_nonce + 1);
+
+            for i in 0..operations.len() {
+                let op = operations.get(i).expect("operation should exist");
+                match op {
+                    BatchOp::Approve(spender, amount, expiration_ledger) => {
+                        if amount < 0 {
+                            return Err(TokenError::InvalidAmount);
+                        }
+                        Self::write_allowance(&env, &from, &spender, amount, expiration_ledger);
+                        events::emit_approve(&env, &from, &spender, amount, expiration_ledger);
+                    }
+                    BatchOp::Transfer(to, amount) => {
+                        if amount <= 0 {
+                            return Err(TokenError::InvalidAmount);
+                        }
+                        if !crate::rate_limit::check_transfer_rate_limit(&env, &from, amount) {
+                            return Err(TokenError::InvalidAmount);
+                        }
+                        Self::move_balance(&env, &from, &to, amount)?;
+                        events::emit_transfer(&env, &from, &to, amount);
+                    }
+                }
+            }
+
+            events::emit_batch_execute(&env, &from, operations.len());
+            Ok(())
+        })
     }
 }
 
@@ -1114,5 +1346,139 @@ impl TokenInterface for BcForgeToken {
             .instance()
             .get(&DataKey::Symbol)
             .unwrap_or_else(|| String::from_str(&env, "SFG"))
+    }
+}
+
+#[contractimpl]
+impl BcForgeToken {
+    // ─── Metadata updates (#911) ───────────────────────────────────────────
+
+    /// Reads the stored token name, defaulting to "bc-forge" when unset.
+    fn read_stored_name(env: &Env) -> String {
+        env.storage()
+            .instance()
+            .get(&DataKey::Name)
+            .unwrap_or_else(|| String::from_str(env, "bc-forge"))
+    }
+
+    /// Reads the stored token symbol, defaulting to "SFG" when unset.
+    fn read_stored_symbol(env: &Env) -> String {
+        env.storage()
+            .instance()
+            .get(&DataKey::Symbol)
+            .unwrap_or_else(|| String::from_str(env, "SFG"))
+    }
+
+    /// Updates the token name after initialization.
+    ///
+    /// @notice Stores `new_name` in instance storage and emits `upd_name` with
+    ///         the admin, old name, and new name (spec: metadata-update-functions
+    ///         requirements 1.1-1.7). Empty strings are accepted; the contract
+    ///         must be initialized or `TokenError::NotInitialized` is returned;
+    ///         pause state does not affect the update.
+    /// @param env The Soroban environment.
+    /// @param new_name The new token name (may be empty; stored verbatim).
+    /// @return `Ok(())` on success, or `TokenError::NotInitialized` if the
+    ///         contract has not been initialized. Panics if the stored admin
+    ///         does not authorize the invocation.
+    pub fn update_name(env: Env, new_name: String) -> Result<(), TokenError> {
+        Self::ensure_initialized(&env)?;
+        let admin_address = admin::get_admin(&env);
+        admin::require_admin(&env, &admin_address);
+        let old_name = Self::read_stored_name(&env);
+        env.storage().instance().set(&DataKey::Name, &new_name);
+        ttl::extend_instance_ttl(&env);
+        events::emit_update_name(&env, &admin_address, &old_name, &new_name);
+        Ok(())
+    }
+
+    /// Updates the token symbol after initialization.
+    ///
+    /// @notice Stores `new_symbol` in instance storage and emits `upd_sym` with
+    ///         the admin, old symbol, and new symbol (spec: metadata-update-functions
+    ///         requirements 2.1-2.7). Empty strings are accepted; the contract
+    ///         must be initialized or `TokenError::NotInitialized` is returned;
+    ///         pause state does not affect the update.
+    /// @param env The Soroban environment.
+    /// @param new_symbol The new token symbol (may be empty; stored verbatim).
+    /// @return `Ok(())` on success, or `TokenError::NotInitialized` if the
+    ///         contract has not been initialized. Panics if the stored admin
+    ///         does not authorize the invocation.
+    pub fn update_symbol(env: Env, new_symbol: String) -> Result<(), TokenError> {
+        Self::ensure_initialized(&env)?;
+        let admin_address = admin::get_admin(&env);
+        admin::require_admin(&env, &admin_address);
+        let old_symbol = Self::read_stored_symbol(&env);
+        env.storage().instance().set(&DataKey::Symbol, &new_symbol);
+        ttl::extend_instance_ttl(&env);
+        events::emit_update_symbol(&env, &admin_address, &old_symbol, &new_symbol);
+        Ok(())
+    }
+
+    /// Sets name, symbol, and decimals with an immutability guard (#911).
+    ///
+    /// @notice Admin-only full-metadata setter. After initialization the
+    ///         `decimals` scale is fixed because holders and the SDK assume a
+    ///         fixed scale, so any attempt to supply a `decimals` value that
+    ///         differs from the stored one is rejected with
+    ///         `TokenError::DecimalsImmutable`. Name and symbol are stored
+    ///         verbatim and an `upd_meta` event is emitted with the new values.
+    /// @param env The Soroban environment.
+    /// @param caller The address calling this function (must have Admin role).
+    /// @param name The new token name.
+    /// @param symbol The new token symbol.
+    /// @param decimals The requested decimal places; must equal the stored value.
+    /// @return `Ok(())` on success, `TokenError::NotInitialized` if the contract
+    ///         is uninitialized, or `TokenError::DecimalsImmutable` if `decimals`
+    ///         would change the initialized scale.
+    pub fn set_metadata(
+        env: Env,
+        caller: Address,
+        name: String,
+        symbol: String,
+        decimals: u32,
+    ) -> Result<(), TokenError> {
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+        let stored_decimals: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Decimals)
+            .unwrap_or(7);
+        if decimals != stored_decimals {
+            return Err(TokenError::DecimalsImmutable);
+        }
+        env.storage().instance().set(&DataKey::Name, &name);
+        env.storage().instance().set(&DataKey::Symbol, &symbol);
+        ttl::extend_instance_ttl(&env);
+        events::emit_metadata_updated(&env, &caller, &name, &symbol);
+        Ok(())
+    }
+
+    /// Updates name and symbol together (#911).
+    ///
+    /// @notice Admin-only metadata updater that changes name and symbol in one
+    ///         call. `decimals` is not a parameter, so the initialized scale
+    ///         cannot change through this entry point. Emits `upd_meta` with
+    ///         the caller, new name, and new symbol.
+    /// @param env The Soroban environment.
+    /// @param caller The address calling this function (must have Admin role).
+    /// @param name The new token name.
+    /// @param symbol The new token symbol.
+    /// @return `Ok(())` on success, or `TokenError::NotInitialized` if the
+    ///         contract has not been initialized.
+    pub fn update_metadata(
+        env: Env,
+        caller: Address,
+        name: String,
+        symbol: String,
+    ) -> Result<(), TokenError> {
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+        env.storage().instance().set(&DataKey::Name, &name);
+        env.storage().instance().set(&DataKey::Symbol, &symbol);
+        ttl::extend_instance_ttl(&env);
+        events::emit_metadata_updated(&env, &caller, &name, &symbol);
+        Ok(())
     }
 }
