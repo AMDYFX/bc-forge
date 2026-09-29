@@ -16,8 +16,7 @@
     "rootDir": "./src",
     "declarationDir": "./dist",
     "types": ["node", "jest"],
-    "allowJs": true,
-    "ignoreDeprecations": "6.0"
+    "allowJs": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

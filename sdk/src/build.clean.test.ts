@@ -91,10 +91,10 @@ describe('SDK build script cleans dist (#349)', () => {
     assertSdkRoot();
   });
 
-  it('build script uses tsup which cleans dist automatically', () => {
+  it('build no longer compiles without cleaning first', () => {
     const scripts = sdkScripts();
     expect(scripts.clean).toBeDefined();
-    expect(scripts.build).toBe('tsup');
+    expect(scripts.build).toContain('clean');
     // a bare tsc is the exact shape of the bug
     expect(scripts.build.trim()).not.toBe('tsc');
   });
