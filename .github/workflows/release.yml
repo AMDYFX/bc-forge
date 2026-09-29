@@ -44,10 +44,57 @@ jobs:
             npm run build --workspace @bc-forge/sdk
             npm run build --workspace @bc-forge/cli
             npm run build --workspace @bc-forge/react
+            npm run build --workspace @bc-forge/indexer
             npm config set provenance true
             npx changeset publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check release status
+
+      - name: Generate component release notes
+        id: release-notes
+        shell: bash
+        env:
+          PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
         run: |
-          echo "Published packages: ${{ steps.changesets.outputs.publishedPackages || 'none' }}"
+          set -euo pipefail
+          published='${{ steps.changesets.outputs.publishedPackages }}'
+          if [[ -z "$published" || "$published" == "[]" || "$published" == "null" ]]; then
+            echo "component=none" >> "$GITHUB_OUTPUT"
+            echo "body<<EOF" >> "$GITHUB_OUTPUT"
+            echo "No package release notes were generated for this run." >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          component="$(node - <<'NODE'
+          const published = JSON.parse(process.env.PUBLISHED_PACKAGES || '[]');
+          const names = Array.isArray(published) ? published.map((pkg) => pkg.name).filter(Boolean) : [];
+          const preferred = ['@bc-forge/react', '@bc-forge/indexer', '@bc-forge/sdk', '@bc-forge/cli'];
+          const match = preferred.find((name) => names.includes(name));
+          process.stdout.write(match || names[0] || 'none');
+          NODE
+          )"
+          echo "component=$component" >> "$GITHUB_OUTPUT"
+          case "$component" in
+            '@bc-forge/react')
+              body="$(npm run --silent release:notes:react)"
+              ;;
+            '@bc-forge/indexer')
+              body="$(npm run --silent release:notes:indexer)"
+              ;;
+            *)
+              body="No component release notes were generated for this run."
+              ;;
+          esac
+
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$body" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Attach release notes to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          body: ${{ steps.release-notes.outputs.body }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
