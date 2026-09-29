@@ -475,7 +475,8 @@ docs host is configured in this repository.
 
 The site includes the [spec-to-code traceability matrix](docs/TRACEABILITY.md),
 the [admin key runbook](docs/ADMIN_KEYS.md), and the
-[upgrade guide](docs/UPGRADE_GUIDE.md).
+[upgrade guide](docs/UPGRADE_GUIDE.md). Supported Node, Rust, Stellar CLI, and
+package ranges are in the [compatibility matrix](docs/COMPATIBILITY.md).
 
 ## Community & first contribution
 
