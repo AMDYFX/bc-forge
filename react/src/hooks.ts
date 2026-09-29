@@ -1,9 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useBcForgeClient, useOptionalBcForgeClient, useVaultClient } from './context';
+import { useBcForgeClient, useOptionalBcForgeClient, useVaultClient, useWallet } from './context';
 import type { Keypair } from '@stellar/stellar-sdk';
 import type { TransactionResult, VaultClient } from '@bc-forge/sdk';
-import { useBcForgeClient, useVaultClient, useWallet } from './context';
-import { Keypair } from '@stellar/stellar-sdk';
 
 /**
  * Hook to read the connected wallet state: adapter name, public key,
