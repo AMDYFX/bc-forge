@@ -38,6 +38,7 @@ export default {
           { text: 'Upgrade Guide', link: '/UPGRADE_GUIDE' },
           { text: 'Vaults', link: '/VAULTS' },
           { text: 'Walkthrough', link: '/WALKTHROUGH' },
+          { text: 'Release Checklist', link: '/RELEASE_CHECKLIST' },
           { text: 'SDK Errors', link: '/sdk-errors' },
         ],
       },

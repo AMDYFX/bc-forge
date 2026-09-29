@@ -40,6 +40,7 @@ jobs:
           publish: |
             npm run build --workspace @bc-forge/sdk
             npm run build --workspace @bc-forge/cli
+            npm run build --workspace @bc-forge/react
             npm config set provenance true
             npx changeset publish
         env:
