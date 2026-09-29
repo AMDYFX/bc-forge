@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import { useState, useEffect, useCallback } from 'react';
 import { useBcForgeClient, useOptionalBcForgeClient, useVaultClient, useWallet } from './context';
 import type { Keypair } from '@stellar/stellar-sdk';
