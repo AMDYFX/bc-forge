@@ -19,6 +19,7 @@
     "dev": "tsup src/index.ts --format cjs,esm --watch --dts",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "jest",
+    "test:consumer": "node test-consumer/run-smoke-test.mjs",
     "e2e": "playwright test"
   },
   "peerDependencies": {
