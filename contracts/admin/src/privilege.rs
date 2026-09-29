@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! Privileged-action timelock and role-hierarchy queries.
 //!
 //! Two concerns live here because they are both "admin contract surface the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! Integration tests for the #918 vesting milestone + claim-delegate suite.
 //!
 //! Covers: milestone tranches (`set_milestones`) accelerating the linear
