@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! # bc-forge Yield Vault Events
 //!
 //! Structured event emission for all yield vault operations.
@@ -33,3 +34,26 @@ pub fn emit_rescue_tokens(env: &Env, admin: &Address, token: &Address, to: &Addr
         (admin.clone(), token.clone(), to.clone(), amount),
     );
 }
+
+/// Emitted when cooldown configuration is updated.
+pub fn emit_cooldown_config_set(env: &Env, admin: &Address, config: &crate::CooldownConfig) {
+    env.events().publish(
+        (symbol_short!("c_cfg"),),
+        (admin.clone(), config.clone()),
+    );
+}
+
+/// Emitted when a withdrawal is queued in cooldown mode.
+pub fn emit_withdraw_queued(
+    env: &Env,
+    caller: &Address,
+    shares: i128,
+    tokens_out: i128,
+    release_ledger: u32,
+) {
+    env.events().publish(
+        (symbol_short!("w_queued"),),
+        (caller.clone(), shares, tokens_out, release_ledger),
+    );
+}
+
