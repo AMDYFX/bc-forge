@@ -2,6 +2,7 @@
 //! codes (#752), and role bitmask helper functions (#753).
 
 use super::*;
+use crate::rbac::role_bit;
 use soroban_sdk::InvokeError;
 
 /// Minimal client harness: registers `AdminContract`, sets an admin, and

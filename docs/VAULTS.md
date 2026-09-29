@@ -43,10 +43,14 @@ The vault logic is implemented in `WrapperContract` (`contracts/wrapper/src/lib.
 | Method | Type | Description |
 | --- | --- | --- |
 | `deposit(env, caller, assets)` | Write | Deposits `assets` of underlying token and mints proportional shares based on current exchange rate. |
-| `withdraw(env, caller, shares)` | Write | Burns `shares` and transfers proportional underlying tokens (principal + yield) back to `caller`. |
+| `withdraw(env, caller, shares)` | Write | Burns `shares` and transfers proportional underlying tokens (or queues payout if cooldown mode is enabled). |
+| `claim_withdrawal(env, caller)` | Write | Claims a queued withdrawal after the cooldown release ledger sequence has passed. |
 | `wrap(env, caller, amount)` | Write | Mints wrapped tokens 1:1 with underlying tokens (flat scaling). |
 | `unwrap(env, caller, amount)` | Write | Burns wrapped tokens 1:1 for underlying tokens. |
 | `distribute_rewards(env, caller, amount)` | Write | Injects yield/fee tokens into the vault without minting new shares, increasing the share price. |
+| `set_cooldown_config(env, admin, config)` | Write | Configures withdrawal cooldown mode, delay ledgers, emergency cap, and emergency window. Admin-only. |
+| `get_cooldown_config(env)` | Read | Returns current `CooldownConfig` (enabled, cooldown_ledgers, emergency_cap, emergency_window_ledgers). |
+| `get_queued_withdrawal(env, user)` | Read | Returns pending `QueuedWithdrawal` details (shares, amount, release_ledger) for `user`. |
 | `total_assets(env)` | Read | Returns the total underlying asset balance owned by the vault contract. |
 | `supply(env)` | Read | Returns the total number of outstanding vault shares. |
 | `calculate_share_price(env)` | Read | Returns integer floor share price ($\text{total\_assets} / \text{total\_shares}$). |
@@ -272,19 +276,62 @@ if (tokensReturned > depositAmount) {
 
 ---
 
-## 6. Error Codes & Exception Handling
+## 6. Withdrawal Cooldown Mode & Per-User Emergency Caps
 
-When interacting with vault methods, the contract may return the following `WrapperError` codes:
+To prevent bank-run races during security incidents or extreme market volatility, protocol admins can enable **Cooldown Mode** and configure **Per-User Emergency Caps**.
 
-| Code | Name | Cause | Resolution / Handling |
+### Admin Configuration
+
+Admins configure cooldown and emergency cap settings via `set_cooldown_config`:
+
+```rust
+let config = CooldownConfig {
+    enabled: true,                   // Enable cooldown mode
+    cooldown_ledgers: 100,            // Payout delayed by 100 ledgers (~500s)
+    emergency_cap: 1_000_000,        // Max 1,000,000 underlying tokens per user per window
+    emergency_window_ledgers: 1000,  // Window duration of 1,000 ledgers (~5,000s)
+};
+
+vault.set_cooldown_config(&admin, &config);
+```
+
+### Cooldown Mode Workflow
+
+1. **Queueing Withdrawal**:
+   - When cooldown mode is enabled (`enabled: true`), calling `withdraw(caller, shares)` immediately burns the specified shares and records a `QueuedWithdrawal`:
+     $$\text{release\_ledger} = \text{current\_ledger} + \text{cooldown\_ledgers}$$
+   - The initial `withdraw` call returns `0` tokens to indicate payout is pending.
+
+2. **Claiming Withdrawal**:
+   - Once the ledger sequence reaches or exceeds `release_ledger`, the user calls `claim_withdrawal(caller)`.
+   - The contract transfers the queued underlying tokens to `caller` and removes the queued request from storage.
+   - Attempting to claim before `release_ledger` fails with `CooldownNotMet`.
+   - Double-claiming fails with `NoQueuedWithdrawal`.
+
+### Per-User Emergency Cap
+
+- When `emergency_cap > 0`, the contract tracks cumulative withdrawals requested by each user within a rolling window of `emergency_window_ledgers`.
+- If a user's requested withdrawal would exceed `emergency_cap` in the active window, the call fails immediately with `EmergencyCapExceeded`.
+- Once `emergency_window_ledgers` have elapsed since the user's window started, the user's window counter automatically resets.
+
+---
+
+## 7. Error Codes & Exception Handling
+
+When interacting with vault methods, the contract may return the following error codes:
+
+| Code (Vault / Wrapper) | Name | Cause | Resolution / Handling |
 | --- | --- | --- | --- |
-| `1` | `AlreadyInitialized` | Re-initialization attempt. | Verify contract setup state. |
-| `2` | `NotInitialized` | Interacting before contract initialization. | Ensure `initialize()` has executed. |
-| `3` | `InvalidAmount` | Zero, negative, or calculation overflow/rounding-down. | Ensure amounts > 0 and sufficient share precision. |
-| `4` | `InsufficientBalance` | Attempting to withdraw or transfer more shares than owned. | Check user share balance before transaction. |
-| `5` | `InsufficientAllowance` | Missing token approval for deposit/wrap. | Call `approve()` on underlying token contract first. |
-| `6` | `ContractPaused` | Vault operations paused by admin/pauser. | Notify user that vault operations are temporarily paused. |
-| `7` | `Reentrant` | Reentrancy attempt detected. | Prevent duplicate state-changing calls. |
-| `8` | `UnderlyingCallFailed` | Cross-contract transfer failed. | Check underlying token balance or transfer restrictions. |
+| `1 / 1` | `AlreadyInitialized` | Re-initialization attempt. | Verify contract setup state. |
+| `2 / 2` | `NotInitialized` | Interacting before contract initialization. | Ensure `initialize()` has executed. |
+| `3 / 3` | `InvalidAmount` | Zero, negative, or calculation overflow/rounding-down. | Ensure amounts > 0 and sufficient share precision. |
+| `4 / 4` | `InsufficientBalance` | Attempting to withdraw or transfer more shares than owned. | Check user share balance before transaction. |
+| `5 / 5` | `InsufficientAllowance` | Missing token approval for deposit/wrap. | Call `approve()` on underlying token contract first. |
+| `6 / 6` | `ContractPaused` | Vault operations paused by admin/pauser. | Notify user that vault operations are temporarily paused. |
+| `7 / 7` | `Reentrant` | Reentrancy attempt detected. | Prevent duplicate state-changing calls. |
+| `8 / 15` | `CooldownNotMet` | Claiming queued withdrawal before `release_ledger`. | Wait until `release_ledger` passes before calling `claim_withdrawal`. |
+| `9 / 16` | `EmergencyCapExceeded` | Requested withdrawal exceeds remaining emergency cap in window. | Reduce withdrawal amount or wait for window reset. |
+| `10 / 17` | `NoQueuedWithdrawal` | `claim_withdrawal` called without a queued withdrawal or double-claim. | Ensure withdrawal is queued before claiming. |
 | `11` | `TokensLocked` | Deposit is time-locked until unlock timestamp. | Check `get_unlock_time(user)` and prompt user to wait. |
 | `12` | `ZeroShares` | `calculate_share_price` called with no outstanding shares. | Handle empty vault state gracefully in frontend UI. |
+
