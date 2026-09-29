@@ -1,0 +1,95 @@
+name: Publish React to npm
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    name: Publish @bc-forge/react
+    # Component-scoped trigger: only a React release, tagged `react-v<semver>`
+    # (for example `react-v1.0.1`), publishes @bc-forge/react. Every other
+    # component release (`sdk-v*`, `cli-v*`, `indexer-v*`, a bare `v*`) fails
+    # this guard, so the job is skipped and no React version reaches npm.
+    if: ${{ github.event.release.tag_name =~ /^react-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/ }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: react
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+          cache-dependency-path: react/package-lock.json
+
+      # Guards against releasing a tag whose version does not match the
+      # manifest, which would publish a different version than the release
+      # advertises and then fail on the next publish of the same number.
+      - name: Verify release tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          expected="react-v$version"
+          if [ "$RELEASE_TAG" != "$expected" ]; then
+            echo "::error::Release tag '$RELEASE_TAG' does not match react/package.json; bump the version to '$expected' before releasing"
+            exit 1
+          fi
+          echo "Releasing $expected"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # @bc-forge/react compiles against the workspace SDK, so the SDK has to
+      # be built before linting, testing, and building React.
+      - name: Build SDK dependency
+        run: npm run build --workspace @bc-forge/sdk
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Confirms the published artifact carries the CJS, ESM, and declaration
+      # entry points and nothing unbuilt, before anything reaches the registry.
+      - name: Validate package tarball
+        run: |
+          set -euo pipefail
+          tarball="$(npm pack --silent)"
+          echo "Packed $tarball"
+          entries="$(tar -tzf "$tarball")"
+          printf '%s\n' "$entries"
+          for required in \
+            package/package.json \
+            package/dist/index.js \
+            package/dist/index.mjs \
+            package/dist/index.d.ts; do
+            if ! printf '%s\n' "$entries" | grep -qx "$required"; then
+              echo "::error::$required is missing from the tarball"
+              exit 1
+            fi
+          done
+          if printf '%s\n' "$entries" | grep -q '^package/src/'; then
+            echo "::error::The tarball ships unbuilt sources under package/src/"
+            exit 1
+          fi
+          echo "Tarball contains every declared entry point and no sources"
+
+      - name: Publish to npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
