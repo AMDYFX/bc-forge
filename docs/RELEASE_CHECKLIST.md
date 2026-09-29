@@ -41,3 +41,50 @@ Use a granular npm token only when trusted publishing is unavailable (for exampl
    - Delete the secret entirely once trusted publishing is confirmed on a release page.
 
 Do not leave `NODE_AUTH_TOKEN` in the workflow after the fallback publish. A provenance publish that always sends a long-lived token is not trusted publishing.
+
+
+# Release Checklist & Preflight Guide
+
+This document serves as the master release checklist for `BCPathway/bc-forge`. Every production release across SDK, CLI, React, indexer, WASM, and documentation must satisfy the preflight, artifact generation, verification, and rollback criteria outlined below.
+
+---
+
+## 1. Preflight & Versioning
+- [ ] **Branch Verification**: Ensure you are releasing from a clean `main` or release branch (`release/vX.Y.Z`).
+- [ ] **Version Bump**: Update version numbers across package manifests (`package.json`, Cargo manifests, etc.) following semantic versioning (SemVer).
+- [ ] **Changelog**: Compile all updates into `CHANGELOG.md`, highlighting breaking changes and migration requirements.
+- [ ] **Upgrade Guidance**: Review and link to [docs/UPGRADE_GUIDE.md](./UPGRADE_GUIDE.md) for breaking or stateful migrations.
+
+---
+
+## 2. Deliverable-Specific Verification & Artifact Checks
+
+### A. SDK & React Packages (`npm`)
+- [ ] **Testing**: Run clean test suites (`npm test`) across core SDK and React package directories.
+- [ ] **Build**: Execute production builds (`npm run build`) ensuring all TypeScript declarations and exports resolve correctly.
+- [ ] **Dry Run**: Run `npm publish --dry-run` to inspect tarball contents and included files.
+- [ ] **Rollback**: If a malformed package is published, deprecate immediately via `npm deprecate <pkg>@<version> "Critical regression"` and publish a patched hotfix version.
+
+### B. CLI Binaries & Container Images
+- [ ] **Cross-Platform Compilation**: Verify multi-architecture build pipelines (Linux, macOS, Windows) succeed.
+- [ ] **Container Security Scan**: Run vulnerability scanners on container images prior to tag pushing.
+- [ ] **Rollback**: Retag the previous stable container digest in your deployment orchestrator if runtime initialization fails.
+
+### C. Smart Contract WASM Binaries
+- [ ] **Deterministic Compilation**: Ensure WASM deliverables are compiled with reproducible build flags.
+- [ ] **Verification**: Confirm contract bytecode matches expected interface digests.
+- [ ] **Rollback**: Prepare state-compatible fallback migration scripts if contract deployment fails validation.
+
+### D. Indexer & Services
+- [ ] **Migration Check**: Verify database migrations are backward-compatible.
+- [ ] **Rollback**: Maintain schema rollback down-scripts for every applied database migration.
+
+---
+
+## 3. Post-Publish Verification
+- [ ] **Registry Check**: Verify packages are downloadable via `npm install <package>@<version>`.
+- [ ] **Smoke Test**: Run an end-to-end smoke test against published artifacts.
+- [ ] **Tag & Release**: Publish GitHub Release tagging the commit and attaching release notes.
+
+---
+*Refer to [docs/UPGRADE_GUIDE.md](./UPGRADE_GUIDE.md) for detailed stateful migration instructions.*
