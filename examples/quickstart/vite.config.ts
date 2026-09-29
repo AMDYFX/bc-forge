@@ -13,8 +13,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@bc-forge/sdk': path.resolve(__dirname, '../../sdk/dist'),
-      '@bc-forge/react': path.resolve(__dirname, '../../react/dist'),
+      '@bc-forge/sdk': path.resolve(__dirname, '../../sdk/src/index.ts'),
+      '@bc-forge/react': path.resolve(__dirname, '../../react/src/index.ts'),
     },
   },
 });

@@ -17,8 +17,8 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@bc-forge/sdk": ["../node_modules/@bc-forge/sdk"],
-      "@bc-forge/react": ["../node_modules/@bc-forge/react"]
+      "@bc-forge/sdk": ["../../sdk/src/index.ts"],
+      "@bc-forge/react": ["../../react/src/index.ts"]
     }
   },
   "include": ["src"],

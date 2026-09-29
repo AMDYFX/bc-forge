@@ -78,29 +78,13 @@ stellar contract invoke \
   --network testnet \
   -- \
   initialize \
-  --admin <YOUR_PUBLIC_KEY> \
+  --admin_address <YOUR_PUBLIC_KEY> \
   --decimal 7 \
   --name "bc-forge Token" \
   --symbol "SFG"
-
-# Initialize RBAC
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --source deployer \
-  --network testnet \
-  -- \
-  migrate_admin
-
-stellar contract invoke \
-  --id <CONTRACT_ID> \
-  --source deployer \
-  --network testnet \
-  -- \
-  grant_role \
-  --caller <YOUR_PUBLIC_KEY> \
-  --role SuperAdmin \
-  --address <SUPER_ADMIN_PUBLIC_KEY>
 ```
+
+`initialize` takes `admin_address`, `decimal`, `name`, and `symbol`. The token contract does not expose `grant_role`.
 
 ## Running the Indexer
 
@@ -152,10 +136,7 @@ examples/quickstart/
 
 ## Configuration Details
 
-The app uses a global `window.APP_CONFIG` object for configuration, which can be:
-
-1. Set via the UI configuration form
-2. Pre-populated by modifying the default values in `src/App.tsx`
+Configuration lives in the React state in `src/App.tsx`. Change it in the form on the page, or edit the default values in that file. The indexer base URL is the server origin only. The app requests `${indexerUrl}/api/v1/mints` itself.
 
 For production deployments, consider using environment variables and a proper configuration system.
 
@@ -168,7 +149,7 @@ For production deployments, consider using environment variables and a proper co
 
 ### "Failed to fetch mints"
 - Ensure the indexer is running and accessible
-- Check the indexer URL includes the `/api/v1` prefix
+- Use the indexer origin only, such as `http://localhost:3000`. The app appends `/api/v1/mints`
 - If using authentication, verify the API token is correct
 - Check CORS settings on the indexer
 
