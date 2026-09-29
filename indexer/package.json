@@ -12,6 +12,8 @@
     "load-test": "node scripts/load-test.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
     "prisma:deploy": "prisma migrate deploy"
   },
   "dependencies": {
@@ -30,5 +32,8 @@
     "prisma": "^5.10.0",
     "tsx": "^4.7.1",
     "typescript": "^5.3.3"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }
