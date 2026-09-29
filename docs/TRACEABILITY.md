@@ -33,27 +33,26 @@ Source documents:
 
 Source: `.kiro/specs/metadata-update-functions/requirements.md`.
 
-The metadata entry points landed with the token contract. `update_name` /
-`update_symbol` are the spec's per-field functions; `set_metadata` /
-`update_metadata` are the later combined setters (#911) that also change name
-and symbol.
+`contracts/token/src/lib.rs` exposes the SEP-41 readers `name()` and `symbol()`.
+It does not define `update_name`, `update_symbol`, `set_metadata`, or
+`update_metadata`, and there are no tests with those names. Every row below
+is a gap until those entry points and tests exist.
 
 | Requirement | Implementation | Test | Status |
 | --- | --- | --- | --- |
-| MU-R1 `update_name` stores a new name | `BcForgeToken::update_name` (`contracts/token/src/lib.rs`) | `test_update_name_success_persists_and_emits_event`, `test_update_name_multiple_calls_stores_latest_value` | **Met** |
-| MU-R2 `update_symbol` stores a new symbol | `BcForgeToken::update_symbol` (`contracts/token/src/lib.rs`) | `test_update_symbol_success_persists_and_emits_event`, `test_update_symbol_accepts_empty_string` | **Met** |
-| MU-R3 Admin-only updates (`require_auth`) | `admin::require_admin` (`contracts/admin/src/rbac.rs`) called by `update_name` / `update_symbol` | `test_update_name_rejects_unauthorized_caller`, `test_update_symbol_rejects_unauthorized_caller`, `test_require_admin_succeeds_for_admin` | **Met** |
-| MU-R4 Event emission (`upd_name`, `upd_sym`) | `events::emit_update_name`, `events::emit_update_symbol` (`contracts/token/src/events.rs`) | `test_update_name_success_persists_and_emits_event`, `test_update_symbol_success_persists_and_emits_event` | **Met** |
-| MU-R5 Metadata persists across calls | Writes `DataKey::Name` / `DataKey::Symbol` in `update_name` / `update_symbol`; read back by the SEP-41 `name()` / `symbol()` | `test_update_name_multiple_calls_stores_latest_value`, `test_update_name_success_persists_and_emits_event` | **Met** |
-| MU-R6 `NotInitialized` on uninitialized contract | `ensure_initialized` guard in `update_name` / `update_symbol` (`contracts/token/src/lib.rs`) | `test_update_name_on_uninitialized_contract_fails`, `test_update_symbol_on_uninitialized_contract_fails` | **Met** |
-| MU-R7 Unit tests for `update_name` | — (test coverage only) | `test_update_name_accepts_empty_string`, `test_update_name_succeeds_while_paused`, `test_update_name_multiple_calls_stores_latest_value` | **Met** |
-| MU-R8 Unit tests for `update_symbol` | — (test coverage only) | `test_update_symbol_accepts_empty_string`, `test_update_symbol_on_uninitialized_contract_fails`, `test_update_symbol_rejects_unauthorized_caller` | **Met** |
-| MU-R9 Event emission tests | — (test coverage only) | `test_update_name_success_persists_and_emits_event`, `test_update_symbol_success_persists_and_emits_event` | **Met** |
-| MU-R10 Metadata follows admin ownership transfer | `BcForgeToken::transfer_ownership` (`contracts/token/src/lib.rs`) exists and `require_admin` resolves the stored admin, but no test exercises metadata updates after a transfer. | None | **Gap** |
-| MU-R11a Empty string accepted | `update_name` / `update_symbol` store the string verbatim | `test_update_name_accepts_empty_string`, `test_update_symbol_accepts_empty_string` | **Met** |
-| MU-R11b Updates succeed while paused | `update_name` / `update_symbol` do not consult pause state | `test_update_name_succeeds_while_paused` | **Met** |
-| MU-R11c Unicode / unchanged-value behavior | No dedicated test for non-ASCII input or setting the same value twice. | None | **Gap** |
-| MU combined metadata setter (#911, beyond the spec) | `BcForgeToken::set_metadata`, `BcForgeToken::update_metadata` (`contracts/token/src/lib.rs`) | `test_set_metadata_updates_name_and_symbol_and_emits_event`, `test_update_metadata_updates_name_and_symbol_and_emits_event` | **Met** |
+| MU-R1 `update_name` stores a new name | None. No `update_name` on `BcForgeToken`. | None | **Gap** |
+| MU-R2 `update_symbol` stores a new symbol | None. No `update_symbol` on `BcForgeToken`. | None | **Gap** |
+| MU-R3 Admin-only updates | None. No metadata writer calls `require_admin`. | None | **Gap** |
+| MU-R4 Event emission (`upd_name`, `upd_sym`) | None. No `emit_update_name` / `emit_update_symbol`. | None | **Gap** |
+| MU-R5 Metadata persists across calls | `name()` / `symbol()` read the values stored at `initialize` only. | None for post-init updates | **Gap** |
+| MU-R6 `NotInitialized` on uninitialized contract | None for an update path. | None | **Gap** |
+| MU-R7 Unit tests for `update_name` | None | None | **Gap** |
+| MU-R8 Unit tests for `update_symbol` | None | None | **Gap** |
+| MU-R9 Event emission tests | None | None | **Gap** |
+| MU-R10 Metadata follows admin ownership transfer | `transfer_ownership` exists. No metadata update exists to follow it. | None | **Gap** |
+| MU-R11a Empty string accepted | None | None | **Gap** |
+| MU-R11b Updates succeed while paused | None | None | **Gap** |
+| MU-R11c Unicode / unchanged-value behavior | None | None | **Gap** |
 
 ## 2. Token locking and vesting
 
@@ -141,7 +140,7 @@ functions as entry points for the unit tests.
 
 | Area | Gaps |
 | --- | --- |
-| Metadata update functions | Requirement R10 (metadata after ownership transfer) and part of R11 (unicode / unchanged-value) lack tests. |
+| Metadata update functions | `update_name` and `update_symbol` are not implemented. The whole spec is a gap. |
 | Token locking / vesting | The public `lock_tokens` and `withdraw_locked` entry points are missing; lock state is not enforced by transfers or burns; lock events and clawback integration are absent. Only the storage layer is implemented and tested. |
 | Roles | The role module is complete and tested, but the deployed token contract does not expose `grant_role` / `revoke_role`, so the SDK's role calls target an entry point the token does not define. |
 | Upgrade | Direct `upgrade` is `SuperAdmin`-gated and tested; the multisig `execute_upgrade` path exists. `pause` / `mint` do not require a proposal. |
