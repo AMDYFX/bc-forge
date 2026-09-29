@@ -468,12 +468,48 @@ We welcome contributions! bc-forge is maintained on [drips.network](https://www.
 
 ### Quick Start for Contributors
 
-1. **Browse open issues** — Look for issues labeled `good-first-issue`, `smart-contract`, or `sdk`
+1. **Browse open issues** — Look for issues labeled `good first issue`, `smart-contract`, or `sdk`
 2. **Fork & branch** — Create a branch: `feature/<issue-number>-<short-description>`
 3. **Implement & test** — Write code, add/update tests, ensure `cargo test` and `npm run build` pass
 4. **Submit a PR** — Use the PR template; reference the issue number
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+### How we fund contributors
+
+Contributor work on bc-forge is funded through [Drips](https://www.drips.network).
+Bounties are attached to issues that maintainers have posted for funding, and the
+same three steps apply whether the issue is a first contribution or a larger
+change.
+
+**1. Claim the issue.** Comment on the GitHub issue to claim it before you start
+work. The maintainer posts funded issues on the bc-forge project page on Drips;
+find them from the [open issues](https://github.com/BCPathway/bc-forge/issues?q=is%3Aissue+is%3Aopen)
+list, and start with issues labeled `good first issue` if you are new to the
+codebase.
+
+**2. Open a pull request.** Branch from `main` using the naming convention below,
+make one focused change, and open a PR against `BCPathway/bc-forge:main`. Use
+`Closes #<issue-number>` in the PR description so the issue is linked.
+
+**3. Get paid after merge.** Once a maintainer reviews and merges your PR, the
+reward for the issue is distributed to you through Drips. Rewards are paid after
+merge, not on submission.
+
+To receive a payout, create a profile at [drips.network](https://www.drips.network)
+and link your GitHub account before you open the PR. The linked address is where
+merged work is paid, so set it up first.
+
+| Step | Where | What happens |
+|---|---|---|
+| Claim | The GitHub issue | Comment to claim; avoid two people on one issue |
+| Submit | A PR against `main` | Include `Closes #<issue-number>` |
+| Get paid | Drips | Reward distributed after the PR is merged |
+
+Funding does not change the review bar: every PR is still reviewed against
+[CONTRIBUTING.md](CONTRIBUTING.md), and security reports are handled separately
+and privately as described in [SECURITY.md](SECURITY.md). See also
+[docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) for a full end-to-end example.
 
 ### Branch Naming Convention
 
