@@ -362,6 +362,54 @@ pub enum AdminKey {
     InstalledWasmHash(soroban_sdk::BytesN<32>),
 }
 
+/// Instance TTL and the count of known singleton admin keys.
+///
+/// `instance_ttl` is the remaining lifetime of the contract instance, in
+/// ledgers. `instance_keys` counts only the singleton [`AdminKey`] variants
+/// stored in instance storage (`Admin`, `AdminPool`, `Threshold`,
+/// `ProposalIdCounter`, `UpgradeProposalIdCounter`). Persistent entries and
+/// parameterized keys are omitted so the view does not scan storage.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageInfo {
+    pub instance_ttl: u32,
+    pub instance_keys: u32,
+}
+
+fn singleton_instance_key_present(env: &Env, key: &AdminKey) -> bool {
+    env.storage().instance().has(key)
+}
+
+/// Count of known singleton admin keys currently stored on the instance.
+///
+/// This is not a scan of every ledger key. Only the five singleton variants
+/// listed on [`StorageInfo`] are checked.
+pub fn get_storage_key_counts(env: &Env) -> u32 {
+    let keys = [
+        AdminKey::Admin,
+        AdminKey::AdminPool,
+        AdminKey::Threshold,
+        AdminKey::ProposalIdCounter,
+        AdminKey::UpgradeProposalIdCounter,
+    ];
+    keys.iter()
+        .filter(|key| singleton_instance_key_present(env, key))
+        .count() as u32
+}
+
+/// Remaining ledgers until the contract instance expires. No authorization.
+pub fn get_instance_ttl(env: &Env) -> u32 {
+    env.storage().instance().get_ttl()
+}
+
+/// Instance TTL plus the singleton key count. No authorization.
+pub fn get_storage_info(env: &Env) -> StorageInfo {
+    StorageInfo {
+        instance_ttl: get_instance_ttl(env),
+        instance_keys: get_storage_key_counts(env),
+    }
+}
+
 fn extend_instance_ttl(env: &Env) {
     ttl::extend_instance_ttl(env);
 }
@@ -4409,16 +4457,21 @@ mod tests {
         let initial_ttl = client.get_instance_ttl();
         assert!(initial_ttl > 0);
 
-        // Configure specific entry TTL in ledger environment
-        env.ledger().set_max_entry_ttl(5_000);
-        let updated_ttl = client.get_instance_ttl();
-        assert_eq!(updated_ttl, 5_000);
+        // Age the ledger so the remaining instance TTL shrinks, then extend
+        // that instance entry. The getter reports remaining ledgers, not the
+        // network max entry TTL.
+        let sequence = env.ledger().sequence();
+        env.ledger().set_sequence_number(sequence + 5);
+        let aged_ttl = client.get_instance_ttl();
+        assert!(aged_ttl < initial_ttl);
 
-        // Extend entry TTL in ledger configuration
-        env.ledger().set_max_entry_ttl(10_000);
+        env.as_contract(&contract_id, || {
+            env.storage()
+                .instance()
+                .extend_ttl(0, aged_ttl.saturating_add(100));
+        });
         let extended_ttl = client.get_instance_ttl();
-        assert_eq!(extended_ttl, 10_000);
-        assert!(extended_ttl > updated_ttl);
+        assert!(extended_ttl > aged_ttl);
 
         let info = client.get_storage_info();
         assert_eq!(info.instance_ttl, extended_ttl);
