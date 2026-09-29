@@ -1,0 +1,39 @@
+name: Publish Release Manifest
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  manifest:
+    name: Generate and Upload Release Manifest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install --quiet --upgrade pip
+
+      - name: Generate checksum manifest
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          python scripts/generate_release_manifest.py \
+            --root . \
+            --output-dir release_assets \
+            --version ${{ github.ref_name }}
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: release_assets/checksums.txt,release_assets/manifest.json
