@@ -67,3 +67,49 @@ We ask that researchers follow responsible disclosure practices:
 - Respect user privacy and data protection requirements
 
 We appreciate the security community's efforts to help keep bc-forge secure.
+
+## Container Image Vulnerability Scanning
+
+All container images are scanned for vulnerabilities before release using Trivy. The scanning process is automated via GitHub Actions and enforces the following policies:
+
+### Scanning Policy
+
+- **Critical vulnerabilities with available fixes**: Block release unless a valid exception exists
+- **High vulnerabilities**: Logged as warnings but do not block release
+- **Scan reports**: Uploaded as artifacts and to GitHub Security tab for 90-day retention
+
+### Vulnerability Exceptions
+
+In rare cases, a fixable critical vulnerability may require a temporary exception. Exceptions must:
+
+1. Be documented in `.github/vulnerability-exceptions.yml`
+2. Include the CVE ID and a security advisory reference (e.g., GHSA-xxxx-xxxx-xxxx)
+3. Specify an expiry date (maximum 90 days recommended)
+4. Include maintainer approval and approval date
+5. Link to a GitHub issue tracking the remediation plan
+
+### Exception Request Process
+
+To request a vulnerability exception:
+
+1. Create a GitHub issue describing the vulnerability and why it cannot be fixed immediately
+2. Include the CVE ID, affected package/version, and proposed remediation timeline
+3. Tag maintainers for security review
+4. Upon approval, add the exception to `.github/vulnerability-exceptions.yml`
+5. The exception will be validated during the CI/CD scan process
+
+### Example Exception Entry
+
+```yaml
+exceptions:
+  - cve: CVE-2024-12345
+    advisory: GHSA-xxxx-xxxx-xxxx
+    package: package-name@version
+    severity: critical
+    reason: Upstream fix not yet available; tracking in issue #123
+    expires: 2024-12-31
+    approved-by: maintainer-name
+    approved-date: 2024-01-15
+```
+
+Expired exceptions will automatically block releases, ensuring timely remediation.
