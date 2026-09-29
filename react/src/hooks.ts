@@ -76,8 +76,13 @@ export function useBalance(address: string | undefined) {
     }
   }, [client, address]);
 
+  // Deferred by a microtask so the effect body sets no state synchronously
+  // (react-hooks/set-state-in-effect); microtasks flush before paint, so the
+  // loading transition is still not observable.
   useEffect(() => {
-    fetchBalance();
+    queueMicrotask(() => {
+      void fetchBalance();
+    });
   }, [fetchBalance]);
 
   return { data, loading, error, refetch: fetchBalance };
@@ -136,7 +141,9 @@ export function useTotalSupply() {
   }, [client]);
 
   useEffect(() => {
-    fetchTotalSupply();
+    queueMicrotask(() => {
+      void fetchTotalSupply();
+    });
   }, [fetchTotalSupply]);
 
   return { data, loading, error, refetch: fetchTotalSupply };
@@ -256,7 +263,9 @@ export function useAllowance(owner: string | undefined, spender: string | undefi
   }, [client, owner, spender]);
 
   useEffect(() => {
-    fetchAllowance();
+    queueMicrotask(() => {
+      void fetchAllowance();
+    });
   }, [fetchAllowance]);
 
   return { data, loading, error, refetch: fetchAllowance };

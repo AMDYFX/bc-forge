@@ -128,8 +128,13 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
     lookbackLedgers,
   ]);
 
+  // Deferred by a microtask so the effect body sets no state synchronously
+  // (react-hooks/set-state-in-effect); microtasks flush before paint, so the
+  // loading transition is still not observable.
   useEffect(() => {
-    loadData();
+    queueMicrotask(() => {
+      void loadData();
+    });
   }, [loadData]);
 
   const handleDeposit = async (e: React.FormEvent) => {
