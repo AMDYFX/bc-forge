@@ -6,7 +6,7 @@ pub(crate) struct GuardExit<'a> {
     env: &'a Env,
 }
 
-impl<'a> Drop for GuardExit<'a> {
+impl Drop for GuardExit<'_> {
     fn drop(&mut self) {
         self.env
             .storage()

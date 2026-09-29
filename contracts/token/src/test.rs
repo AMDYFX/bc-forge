@@ -1,6 +1,7 @@
 use crate::{BcForgeToken, BcForgeTokenClient, DataKey, TokenError};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::Events as _;
+use soroban_sdk::testutils::Ledger as _;
 use soroban_sdk::{symbol_short, vec, Address, BytesN, Env, String, TryIntoVal, Val};
 
 fn setup_contract(env: &Env) -> (BcForgeTokenClient<'_>, Address) {
@@ -768,4 +769,61 @@ fn test_transfer_and_transfer_from_resume_after_unpause() {
         .is_ok());
     assert_eq!(client.balance(&owner), 875);
     assert_eq!(client.balance(&recipient), 125);
+}
+
+#[test]
+fn test_token_storage_info_returns_non_negative_ttl_without_auth() {
+    let env = Env::default();
+    // Intentionally no mock_all_auths to verify no authorization is required for the view.
+    let contract_id = env.register(BcForgeToken, ());
+    let client = BcForgeTokenClient::new(&env, &contract_id);
+
+    let info = client.get_storage_info();
+    assert!(info.instance_ttl > 0, "instance TTL must be non-negative");
+    assert_eq!(
+        info.instance_keys, 0,
+        "fresh uninitialized token has 0 admin singleton keys"
+    );
+
+    let direct_ttl = client.get_instance_ttl();
+    assert_eq!(direct_ttl, info.instance_ttl);
+
+    let direct_keys = client.get_storage_key_counts();
+    assert_eq!(direct_keys, 0);
+}
+
+#[test]
+fn test_token_storage_info_tracks_admin_keys_and_ttl() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, admin) = setup(&env);
+
+    let info = client.get_storage_info();
+    assert!(info.instance_ttl > 0);
+    // After initialization, AdminKey::Admin is present
+    assert_eq!(info.instance_keys, 1);
+    assert_eq!(client.get_storage_key_counts(), 1);
+
+    // Setting admin pool adds AdminPool and Threshold
+    let admin2 = Address::generate(&env);
+    let pool = vec![&env, admin.clone(), admin2.clone()];
+    client.set_admin_pool(&pool, &2);
+    assert_eq!(client.get_storage_key_counts(), 3);
+
+    // Creating proposal adds ProposalIdCounter
+    let desc = String::from_str(&env, "Proposal 1");
+    client.create_proposal(&admin, &desc);
+    assert_eq!(client.get_storage_key_counts(), 4);
+
+    // Verify storage info matches
+    let updated_info = client.get_storage_info();
+    assert_eq!(updated_info.instance_keys, 4);
+
+    // Configure and extend TTL in environment
+    env.ledger().set_max_entry_ttl(4_000);
+    assert_eq!(client.get_instance_ttl(), 4_000);
+
+    env.ledger().set_max_entry_ttl(8_000);
+    assert_eq!(client.get_instance_ttl(), 8_000);
+    assert_eq!(client.get_storage_info().instance_ttl, 8_000);
 }

@@ -78,6 +78,19 @@
 //!   `(Role, Address)`, `SuperAdmin(Address)` or `UpgradeProposal(u64)` entry has
 //!   its own lifecycle.
 //!
+//! ## Storage Monitoring & TTL
+//!
+//! - [`get_storage_info`] reports contract instance TTL and known singleton storage key counts:
+//!   - `instance_ttl`: The remaining TTL of the contract instance in ledgers until expiry.
+//!   - `instance_keys`: The count of known singleton storage keys present in instance storage.
+//! - [`get_instance_ttl`] returns the remaining instance TTL directly in ledgers until expiry.
+//! - [`get_storage_key_counts`] returns the count of known singleton admin storage keys.
+//! - **Scan Limit Notice**: Only known singleton keys stored under [`AdminKey`] in instance
+//!   storage (`Admin`, `AdminPool`, `Threshold`, `ProposalIdCounter`, `UpgradeProposalIdCounter`)
+//!   are counted. Persistent storage entries (such as role mappings and registered WASM hashes)
+//!   and parameterized proposal entries require unbounded scans, which cannot be enumerated
+//!   without unbounded gas usage.
+//!
 //! ## Invariants & Edge Cases
 //!
 //! ### Storage Slot Isolation
@@ -1412,6 +1425,82 @@ pub fn get_admin_pool(env: &Env) -> Vec<Address> {
         })
 }
 
+/// Information about the contract instance TTL and storage key counts.
+///
+/// @title StorageInfo
+/// @notice Reports instance TTL and counts of known singleton storage keys.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct StorageInfo {
+    /// The remaining instance TTL in ledgers until expiry.
+    pub instance_ttl: u32,
+    /// Count of known singleton instance storage keys currently present.
+    ///
+    /// # Scan Limit Notice
+    /// This counts only known singleton keys stored under [`AdminKey`] in instance
+    /// storage (`Admin`, `AdminPool`, `Threshold`, `ProposalIdCounter`,
+    /// `UpgradeProposalIdCounter`). It does not perform an unbounded scan over
+    /// persistent storage entries (such as dynamic role assignments or wasm hashes)
+    /// or dynamic proposal entries.
+    pub instance_keys: u32,
+}
+
+/// Returns the remaining TTL (in ledgers) of the contract instance until expiry.
+///
+/// @notice Returns the contract instance TTL without requiring authorization.
+/// @param env The Soroban environment.
+/// @return The remaining instance TTL in ledgers.
+pub fn get_instance_ttl(env: &Env) -> u32 {
+    env.storage().max_ttl()
+}
+
+/// Returns the count of known singleton storage keys present in instance storage.
+///
+/// # Scan Limit Notice
+/// This counts only known singleton keys stored under [`AdminKey`] in instance
+/// storage (`Admin`, `AdminPool`, `Threshold`, `ProposalIdCounter`,
+/// `UpgradeProposalIdCounter`). It does not perform an unbounded scan over
+/// persistent storage entries or dynamic proposal entries.
+///
+/// @notice Returns the count of known singleton admin storage keys.
+/// @param env The Soroban environment.
+/// @return The number of present singleton instance keys.
+pub fn get_storage_key_counts(env: &Env) -> u32 {
+    let mut count = 0u32;
+    if env.storage().instance().has(&AdminKey::Admin) {
+        count += 1;
+    }
+    if env.storage().instance().has(&AdminKey::AdminPool) {
+        count += 1;
+    }
+    if env.storage().instance().has(&AdminKey::Threshold) {
+        count += 1;
+    }
+    if env.storage().instance().has(&AdminKey::ProposalIdCounter) {
+        count += 1;
+    }
+    if env
+        .storage()
+        .instance()
+        .has(&AdminKey::UpgradeProposalIdCounter)
+    {
+        count += 1;
+    }
+    count
+}
+
+/// Returns the contract instance TTL and counts of known singleton storage keys.
+///
+/// @notice Reports instance TTL and storage key counts without requiring authorization.
+/// @param env The Soroban environment.
+/// @return A [`StorageInfo`] struct containing `instance_ttl` and `instance_keys`.
+pub fn get_storage_info(env: &Env) -> StorageInfo {
+    StorageInfo {
+        instance_ttl: get_instance_ttl(env),
+        instance_keys: get_storage_key_counts(env),
+    }
+}
+
 /// Returns the multi-sig approval threshold.
 ///
 /// @notice Returns the number of approvals required to execute a proposal.
@@ -2359,6 +2448,18 @@ mod tests {
             description: String,
         ) -> Result<u64, AdminError> {
             super::submit_upgrade_proposal(&env, submitter, new_wasm_hash, description)
+        }
+
+        pub fn get_storage_info(env: Env) -> StorageInfo {
+            super::get_storage_info(&env)
+        }
+
+        pub fn get_instance_ttl(env: Env) -> u32 {
+            super::get_instance_ttl(&env)
+        }
+
+        pub fn get_storage_key_counts(env: Env) -> u32 {
+            super::get_storage_key_counts(&env)
         }
     }
 
@@ -6074,5 +6175,94 @@ mod tests {
 
         // Should not panic for deployer
         client.require_deployer();
+    }
+
+    #[test]
+    fn test_storage_info_returns_non_negative_ttl_without_auth() {
+        let env = Env::default();
+        // Notice: env.mock_all_auths() is intentionally omitted to verify no auth is required.
+        let contract_id = env.register(AdminContract, ());
+        let client = AdminContractClient::new(&env, &contract_id);
+
+        let info = client.get_storage_info();
+        assert!(info.instance_ttl > 0, "instance TTL must be non-negative");
+        assert_eq!(
+            info.instance_keys, 0,
+            "fresh contract has 0 admin singleton keys"
+        );
+
+        let direct_ttl = client.get_instance_ttl();
+        assert_eq!(direct_ttl, info.instance_ttl);
+
+        let direct_keys = client.get_storage_key_counts();
+        assert_eq!(direct_keys, 0);
+    }
+
+    #[test]
+    fn test_storage_info_key_counts_tracks_singleton_keys() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AdminContract, ());
+        let client = AdminContractClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+
+        assert_eq!(client.get_storage_key_counts(), 0);
+
+        // 1. Setting admin adds AdminKey::Admin
+        client.set_admin(&admin1);
+        assert_eq!(client.get_storage_key_counts(), 1);
+        let info = client.get_storage_info();
+        assert_eq!(info.instance_keys, 1);
+
+        // 2. Setting admin pool adds AdminKey::AdminPool and AdminKey::Threshold
+        let pool = vec![&env, admin1.clone(), admin2.clone()];
+        client.set_admin_pool(&pool, &2);
+        assert_eq!(client.get_storage_key_counts(), 3);
+
+        // 3. Creating proposal initializes AdminKey::ProposalIdCounter
+        let desc = String::from_str(&env, "Test Proposal");
+        client.create_proposal(&admin1, &desc);
+        assert_eq!(client.get_storage_key_counts(), 4);
+
+        // 4. Submitting upgrade proposal initializes AdminKey::UpgradeProposalIdCounter
+        let wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
+        client.register_wasm_hash(&admin1, &wasm_hash);
+        let upgrade_desc = String::from_str(&env, "Upgrade WASM");
+        let _ = client.submit_upgrade_proposal(&admin1, &wasm_hash, &upgrade_desc);
+        assert_eq!(client.get_storage_key_counts(), 5);
+
+        let final_info = client.get_storage_info();
+        assert_eq!(final_info.instance_keys, 5);
+        assert!(final_info.instance_ttl > 0);
+    }
+
+    #[test]
+    fn test_storage_info_ttl_after_extend_ttl() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AdminContract, ());
+        let client = AdminContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+
+        client.set_admin(&admin);
+
+        let initial_ttl = client.get_instance_ttl();
+        assert!(initial_ttl > 0);
+
+        // Configure specific entry TTL in ledger environment
+        env.ledger().set_max_entry_ttl(5_000);
+        let updated_ttl = client.get_instance_ttl();
+        assert_eq!(updated_ttl, 5_000);
+
+        // Extend entry TTL in ledger configuration
+        env.ledger().set_max_entry_ttl(10_000);
+        let extended_ttl = client.get_instance_ttl();
+        assert_eq!(extended_ttl, 10_000);
+        assert!(extended_ttl > updated_ttl);
+
+        let info = client.get_storage_info();
+        assert_eq!(info.instance_ttl, extended_ttl);
     }
 }

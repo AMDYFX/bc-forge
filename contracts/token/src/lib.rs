@@ -849,6 +849,30 @@ impl BcForgeToken {
         Self::ensure_initialized(&env).expect("token must be initialized");
         admin::execute_upgrade(&env, executor, proposal_id, wasm_hash)
     }
+
+    /// Returns the contract instance TTL and counts of known singleton storage keys.
+    ///
+    /// @notice Returns instance TTL and storage key count without requiring authorization.
+    /// @return [`admin::StorageInfo`] struct containing `instance_ttl` and `instance_keys`.
+    pub fn get_storage_info(env: Env) -> admin::StorageInfo {
+        admin::get_storage_info(&env)
+    }
+
+    /// Returns the remaining instance TTL in ledgers until expiry.
+    ///
+    /// @notice Returns the contract instance TTL without requiring authorization.
+    /// @return The remaining instance TTL in ledgers.
+    pub fn get_instance_ttl(env: Env) -> u32 {
+        admin::get_instance_ttl(&env)
+    }
+
+    /// Returns the count of known singleton admin storage keys.
+    ///
+    /// @notice Returns the count of known singleton admin storage keys.
+    /// @return The number of present singleton instance keys.
+    pub fn get_storage_key_counts(env: Env) -> u32 {
+        admin::get_storage_key_counts(&env)
+    }
 }
 
 #[contractimpl]

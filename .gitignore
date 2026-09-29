@@ -1,1 +1,28 @@
-(empty)
+# Rust build output
+/target/
+target/
+**/*.rs.bk
+
+# Node dependencies
+node_modules/
+**/node_modules/
+
+# Soroban compiled output
+*.wasm
+*.d
+
+# SDK build artifacts
+sdk/dist/
+sdk/*.tgz
+
+# Environment & IDE
+.env
+.env.local
+.env.*.local
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
