@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! Structured event emission for the admin access-control module.
 //!
 //! @title Admin Events
@@ -73,6 +74,48 @@ pub fn emit_upgraded(env: &Env, executor: &Address, proposal_id: u64, wasm_hash:
     );
 }
 
+/// Emitted when a privileged action (fee-config change or ownership
+/// transfer) is proposed under the #914 timelock.
+///
+/// Topics: `prv_prop`
+/// Data:   `(submitter, action, executable_at)`
+///
+/// @notice Publishes privileged-action proposal data.
+/// @dev `action` is the serialized `PrivilegeAction` contracttype.
+pub fn emit_privilege_proposed(
+    env: &Env,
+    submitter: &Address,
+    action: &crate::PrivilegeAction,
+    executable_at: u64,
+) {
+    env.events().publish(
+        (symbol_short!("prv_prop"),),
+        (submitter.clone(), action.clone(), executable_at),
+    );
+}
+
+/// Emitted when a pending privileged action is cancelled (the emergency
+/// brake a compromised-key scenario exists for).
+///
+/// Topics: `prv_cncl`
+/// Data:   `(caller, action)`
+pub fn emit_privilege_cancelled(env: &Env, caller: &Address, action: &crate::PrivilegeAction) {
+    env.events().publish(
+        (symbol_short!("prv_cncl"),),
+        (caller.clone(), action.clone()),
+    );
+}
+
+/// Emitted when a privileged action's timelock has elapsed and the action
+/// has been consumed by the token contract's effect.
+///
+/// Topics: `prv_exec`
+/// Data:   `(action,)`
+pub fn emit_privilege_executed(env: &Env, action: &crate::PrivilegeAction) {
+    env.events()
+        .publish((symbol_short!("prv_exec"),), (action.clone(),));
+}
+
 /// Emitted when a multi-sig WASM upgrade proposal is cancelled by its
 /// proposer. Resolves issue #662.
 ///
@@ -87,4 +130,20 @@ pub fn emit_upgraded(env: &Env, executor: &Address, proposal_id: u64, wasm_hash:
 pub fn emit_proposal_cancelled(env: &Env, caller: &Address, proposal_id: u64) {
     env.events()
         .publish((symbol_short!("prop_cncl"),), (caller.clone(), proposal_id));
+}
+
+/// Emitted when a multi-sig WASM upgrade proposal is submitted.
+///
+/// Topics: `upg_prop`
+/// Data:   `(proposal_id, submitter, new_wasm_hash)`
+pub fn emit_upgrade_proposal_submitted(
+    env: &Env,
+    submitter: &Address,
+    proposal_id: u64,
+    new_wasm_hash: &BytesN<32>,
+) {
+    env.events().publish(
+        (symbol_short!("upg_prop"),),
+        (proposal_id, submitter.clone(), new_wasm_hash.clone()),
+    );
 }

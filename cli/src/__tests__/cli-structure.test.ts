@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import { describe, it, expect } from "vitest";
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
@@ -25,6 +26,13 @@ describe("CLI TypeScript project structure (#683)", () => {
         "check-status",
         "verify-hash",
         "generate-bindings",
+        "deploy",
+        "init",
+        "deployments",
+        "init-superadmin",
+        "connect",
+        "orchestrate",
+        "batch-mint",
       ])
     );
   });

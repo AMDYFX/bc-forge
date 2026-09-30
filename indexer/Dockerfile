@@ -1,61 +1,32 @@
-# Build stage
-FROM node:20-alpine AS builder
+FROM node:20-alpine
+
+# Install openssl for Prisma engine support on Alpine
+RUN apk add --no-cache openssl
 
 WORKDIR /app
 
-# Copy package files
-COPY package*.json ./
-COPY prisma ./prisma/
-COPY tsconfig.json ./
-COPY src ./src/
+# Copy package manifests
+COPY package.json package-lock.json ./
 
-# Install dependencies
+# Install production and build dependencies
 RUN npm ci
+
+# Copy Prisma schema and source code required for generation and build
+COPY prisma ./prisma
+COPY tsconfig.json ./
+COPY src ./src
 
 # Generate Prisma client
 RUN npx prisma generate
 
-# Build TypeScript
+# Build TypeScript source
 RUN npm run build
 
-# Production stage
-FROM node:20-alpine AS production
-
-WORKDIR /app
-
-# Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
-
-# Create non-root user
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
-
-# Copy package files
-COPY package*.json ./
-
-# Install production dependencies only
-RUN npm ci --omit=dev
-
-# Copy built artifacts and Prisma files from builder
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
-COPY --from=builder /app/prisma ./prisma
-
-# Change ownership to non-root user
-RUN chown -R nodejs:nodejs /app
-
-# Switch to non-root user
-USER nodejs
-
-# Expose port
+# Expose default HTTP port
 EXPOSE 3000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
+# Default port environment variable
+ENV PORT=3000
 
-# Use dumb-init to handle signals properly
-ENTRYPOINT ["dumb-init", "--"]
-
-# Start the application
-CMD ["node", "dist/index.js"]
+# Start compiled server
+CMD ["npm", "start"]

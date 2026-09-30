@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 //! # bc-forge Wrapper Contract
 //!
 //! Wraps any SEP-41 compliant token into a bc-forge compatible token,
@@ -15,6 +16,7 @@
 #![no_std]
 
 mod events;
+pub mod math;
 
 #[cfg(test)]
 mod test;
@@ -24,6 +26,67 @@ use soroban_sdk::token::TokenInterface;
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token::TokenClient, Address, Env, String,
 };
+
+// ─── Storage Structs ─────────────────────────────────────────────────────────
+
+/// Vault state storing core yield-bearing vault parameters, deposit limits,
+/// exchange rate, and fee accumulation metrics.
+///
+/// @title VaultState
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct VaultState {
+    /// Protocol/management fee rate represented in basis points (e.g. 100 = 1%, max 10000 = 100%).
+    pub fee_rate_bps: u32,
+    /// Address designated to receive collected vault fees.
+    pub fee_receiver: Address,
+    /// Minimum deposit limit per operation.
+    pub min_deposit: i128,
+    /// Maximum deposit cap per operation or total vault capacity.
+    pub max_deposit: i128,
+    /// Current exchange rate between wrapper shares and underlying asset.
+    pub exchange_rate: i128,
+    /// Accumulated undistributed/collected fees pending harvest or distribution.
+    pub accumulated_fees: i128,
+    /// Timestamp (ledger time) of the last fee accumulation or exchange rate update.
+    pub last_update_timestamp: u64,
+}
+
+/// Cooldown and emergency cap configuration parameters.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct CooldownConfig {
+    /// Whether withdrawal cooldown mode is active.
+    pub enabled: bool,
+    /// Delay (in ledgers) before a queued withdrawal can be claimed.
+    pub cooldown_ledgers: u32,
+    /// Maximum underlying tokens a user can withdraw/queue in the emergency window (0 = disabled).
+    pub emergency_cap: i128,
+    /// Emergency window duration (in ledgers).
+    pub emergency_window_ledgers: u32,
+}
+
+/// Queued withdrawal request stored when cooldown mode is active.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct QueuedWithdrawal {
+    /// Amount of shares burned for this withdrawal.
+    pub shares: i128,
+    /// Underlying token payout amount.
+    pub amount: i128,
+    /// Ledger sequence at or after which the queued amount can be claimed.
+    pub release_ledger: u32,
+}
+
+/// Emergency window state for per-user cap tracking.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct UserEmergencyState {
+    /// Total underlying tokens withdrawn/queued by user in the current window.
+    pub amount_withdrawn: i128,
+    /// Ledger sequence when the user's current emergency window started.
+    pub window_start_ledger: u32,
+}
 
 // ─── Storage Keys ────────────────────────────────────────────────────────────
 
@@ -40,9 +103,9 @@ pub enum DataKey {
     /// Decimal places for the wrapper token.
     Decimals,
     /// Human-readable name of the wrapper token.
-    Name,
-    /// Ticker symbol of the wrapper token.
     Symbol,
+    /// Human-readable symbol of the wrapper token.
+    Name,
     /// Total vault share supply in circulation. Stored in instance storage
     /// and updated on every mint (`wrap`) and burn (`unwrap`, `burn`, `burn_from`).
     Supply,
@@ -59,10 +122,18 @@ pub enum DataKey {
     AllowanceExp(Address, Address),
     /// Reentrancy lock flag.
     Lock,
+    /// Vault state parameters (fee rate, limits, exchange rate, fee accumulation).
+    VaultState,
     /// Per-user deposit unlock timestamp (seconds since epoch): while the
     /// current ledger timestamp is before this value the user's deposit is
     /// time-locked and withdrawals revert via the `require_unlocked` guard.
     UnlockTime(Address),
+    /// Cooldown and emergency cap configuration.
+    CooldownConfig,
+    /// Queued withdrawal for a user.
+    QueuedWithdrawal(Address),
+    /// Emergency cap tracking state for a user.
+    UserEmergencyState(Address),
 }
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -88,6 +159,24 @@ pub enum WrapperError {
     TokensLocked = 11,
     /// Share price cannot be computed: there are no outstanding vault shares.
     ZeroShares = 12,
+    /// Vault state has not been configured.
+    VaultStateNotSet = 13,
+    /// Provided vault state parameters are invalid.
+    InvalidVaultState = 14,
+    /// Withdrawal queued: waiting for cooldown release ledger before payout.
+    CooldownNotMet = 15,
+    /// Emergency cap for user in current window has been exceeded.
+    EmergencyCapExceeded = 16,
+    /// No queued withdrawal found to claim, or already claimed.
+    NoQueuedWithdrawal = 17,
+    /// `rescue_tokens` was called on the underlying asset that `total_assets`
+    /// accounts for. User funds can never leave through the rescue hatch.
+    UnderlyingAssetProtected = 18,
+    /// `rescue_tokens` was called with a non-positive amount.
+    InvalidRescueAmount = 19,
+    /// `rescue_tokens` was called on this vault's own share token. Share
+    /// balances the vault holds are not stranded foreign assets.
+    ShareTokenProtected = 20,
 }
 
 // ─── Contract ────────────────────────────────────────────────────────────────
@@ -170,6 +259,17 @@ impl WrapperContract {
             .instance()
             .get(&DataKey::UnderlyingToken)
             .expect("underlying token not set")
+    }
+
+    fn read_vault_state(env: &Env) -> Result<VaultState, WrapperError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::VaultState)
+            .ok_or(WrapperError::VaultStateNotSet)
+    }
+
+    fn write_vault_state(env: &Env, state: &VaultState) {
+        env.storage().instance().set(&DataKey::VaultState, state);
     }
 
     fn read_balance(env: &Env, id: &Address) -> i128 {
@@ -290,7 +390,7 @@ impl WrapperContract {
         Ok(())
     }
 
-    // ── Decimal Scaling ──────────────────────────────────────────────────────
+    // ── Decimal Scaling & Rounding Math ─────────────────────────────────────
 
     /// Returns the wrapper's own decimal precision.
     fn wrapper_decimals(env: &Env) -> u32 {
@@ -300,48 +400,154 @@ impl WrapperContract {
             .unwrap_or(7)
     }
 
-    /// Scales `amount` from underlying decimals to wrapper decimals.
-    /// Returns `None` on overflow.
+    /// Scales `amount` from underlying decimals to wrapper decimals, strictly rounding down.
     fn scale_to_wrapper(
         underlying_decimals: u32,
         wrapper_decimals: u32,
         amount: i128,
     ) -> Option<i128> {
-        if amount < 0 {
-            return None;
-        }
-
-        let amount = amount as u128;
-        if wrapper_decimals >= underlying_decimals {
-            let factor = 10u128.checked_pow(wrapper_decimals - underlying_decimals)?;
-            let scaled = amount.checked_mul(factor)?;
-            i128::try_from(scaled).ok()
-        } else {
-            let factor = 10u128.checked_pow(underlying_decimals - wrapper_decimals)?;
-            i128::try_from(amount / factor).ok()
-        }
+        math::scale_decimals_down(amount, underlying_decimals, wrapper_decimals)
     }
 
-    /// Scales `amount` from wrapper decimals back to underlying decimals.
-    /// Returns `None` on overflow.
+    /// Scales `amount` from wrapper decimals back to underlying decimals, strictly rounding down.
     fn scale_to_underlying(
         underlying_decimals: u32,
         wrapper_decimals: u32,
         amount: i128,
     ) -> Option<i128> {
-        if amount < 0 {
+        math::scale_decimals_down(amount, wrapper_decimals, underlying_decimals)
+    }
+
+    /// Calculates shares for a given amount of underlying assets, strictly rounding down (floor)
+    /// in favor of the protocol to mitigate rounding error inflation.
+    fn calc_shares_for_assets(env: &Env, underlying_decimals: u32, assets: i128) -> Option<i128> {
+        if assets <= 0 {
             return None;
         }
+        let wrapper_decimals = Self::wrapper_decimals(env);
+        let scaled_assets = Self::scale_to_wrapper(underlying_decimals, wrapper_decimals, assets)?;
 
-        let amount = amount as u128;
-        if underlying_decimals >= wrapper_decimals {
-            let factor = 10u128.checked_pow(underlying_decimals - wrapper_decimals)?;
-            let scaled = amount.checked_mul(factor)?;
-            i128::try_from(scaled).ok()
-        } else {
-            let factor = 10u128.checked_pow(wrapper_decimals - underlying_decimals)?;
-            i128::try_from(amount / factor).ok()
+        if let Ok(vault_state) = Self::read_vault_state(env) {
+            if vault_state.exchange_rate > 0 {
+                return math::mul_div_down(
+                    scaled_assets,
+                    math::SCALING_FACTOR,
+                    vault_state.exchange_rate,
+                );
+            }
         }
+
+        Some(scaled_assets)
+    }
+
+    /// Calculates underlying assets returned for a given amount of shares, strictly rounding down (floor)
+    /// in favor of the protocol to mitigate reserve asset leakage.
+    fn calc_assets_for_shares(env: &Env, underlying_decimals: u32, shares: i128) -> Option<i128> {
+        if shares <= 0 {
+            return None;
+        }
+        let wrapper_decimals = Self::wrapper_decimals(env);
+
+        let scaled_shares = if let Ok(vault_state) = Self::read_vault_state(env) {
+            if vault_state.exchange_rate > 0 {
+                math::mul_div_down(shares, vault_state.exchange_rate, math::SCALING_FACTOR)?
+            } else {
+                shares
+            }
+        } else {
+            shares
+        };
+
+        Self::scale_to_underlying(underlying_decimals, wrapper_decimals, scaled_shares)
+    }
+
+    fn read_cooldown_config(env: &Env) -> CooldownConfig {
+        env.storage()
+            .instance()
+            .get(&DataKey::CooldownConfig)
+            .unwrap_or(CooldownConfig {
+                enabled: false,
+                cooldown_ledgers: 0,
+                emergency_cap: 0,
+                emergency_window_ledgers: 0,
+            })
+    }
+
+    fn write_cooldown_config(env: &Env, config: &CooldownConfig) {
+        env.storage()
+            .instance()
+            .set(&DataKey::CooldownConfig, config);
+    }
+
+    fn read_queued_withdrawal(env: &Env, user: &Address) -> Option<QueuedWithdrawal> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::QueuedWithdrawal(user.clone()))
+    }
+
+    fn write_queued_withdrawal(env: &Env, user: &Address, queued: &QueuedWithdrawal) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::QueuedWithdrawal(user.clone()), queued);
+    }
+
+    fn remove_queued_withdrawal(env: &Env, user: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::QueuedWithdrawal(user.clone()));
+    }
+
+    fn read_user_emergency_state(env: &Env, user: &Address) -> Option<UserEmergencyState> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::UserEmergencyState(user.clone()))
+    }
+
+    fn write_user_emergency_state(env: &Env, user: &Address, state: &UserEmergencyState) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::UserEmergencyState(user.clone()), state);
+    }
+
+    fn check_and_update_emergency_cap(
+        env: &Env,
+        user: &Address,
+        requested_amount: i128,
+        config: &CooldownConfig,
+    ) -> Result<(), WrapperError> {
+        if config.emergency_cap > 0 {
+            let current_ledger = env.ledger().sequence();
+            let mut state = match Self::read_user_emergency_state(env, user) {
+                Some(mut s) => {
+                    if config.emergency_window_ledgers > 0
+                        && current_ledger
+                            >= s.window_start_ledger
+                                .saturating_add(config.emergency_window_ledgers)
+                    {
+                        s.amount_withdrawn = 0;
+                        s.window_start_ledger = current_ledger;
+                    }
+                    s
+                }
+                None => UserEmergencyState {
+                    amount_withdrawn: 0,
+                    window_start_ledger: current_ledger,
+                },
+            };
+
+            let new_withdrawn = state
+                .amount_withdrawn
+                .checked_add(requested_amount)
+                .ok_or(WrapperError::InvalidAmount)?;
+
+            if new_withdrawn > config.emergency_cap {
+                return Err(WrapperError::EmergencyCapExceeded);
+            }
+
+            state.amount_withdrawn = new_withdrawn;
+            Self::write_user_emergency_state(env, user, &state);
+        }
+        Ok(())
     }
 }
 
@@ -365,6 +571,9 @@ impl WrapperContract {
         name: String,
         symbol: String,
     ) -> Result<(), WrapperError> {
+        // Ensure only the deployer can initialize the contract
+        env.current_contract_address().require_auth();
+
         if admin::has_admin(&env) {
             return Err(WrapperError::AlreadyInitialized);
         }
@@ -413,10 +622,9 @@ impl WrapperContract {
             &amount,
         );
 
-        // Scale amount to wrapper decimals
+        // Scale amount to wrapper shares, rounding down
         let underlying_decimals = underlying_client.decimals();
-        let wrapper_decimals = Self::wrapper_decimals(&env);
-        let wrapped_amount = Self::scale_to_wrapper(underlying_decimals, wrapper_decimals, amount)
+        let wrapped_amount = Self::calc_shares_for_assets(&env, underlying_decimals, amount)
             .unwrap_or_else(|| soroban_sdk::panic_with_error!(&env, WrapperError::InvalidAmount));
 
         if wrapped_amount <= 0 {
@@ -538,10 +746,12 @@ impl WrapperContract {
     /// Unwrap `wrapped_amount` of wrapped tokens back to the underlying token.
     ///
     /// Burns `wrapped_amount` of wrapped tokens from `caller` and transfers the
-    /// equivalent underlying tokens back to `caller`, scaling for any decimal mismatch.
+    /// equivalent underlying tokens back to `caller`, scaling and rounding down
+    /// in favor of the protocol.
     ///
     /// # Security
-    /// Protected by a reentrancy guard.
+    /// Protected by a reentrancy guard, and enforces the deposit time lockup so
+    /// a locked deposit cannot be exited early via `unwrap` either.
     pub fn unwrap(env: Env, caller: Address, wrapped_amount: i128) -> Result<(), WrapperError> {
         Self::ensure_initialized(&env)?;
         Self::ensure_not_paused(&env)?;
@@ -550,6 +760,10 @@ impl WrapperContract {
         if wrapped_amount <= 0 {
             return Err(WrapperError::InvalidAmount);
         }
+
+        // #739 – enforce the deposit time lockup like `withdraw` does; without
+        // this guard, `unwrap` would let a time-locked depositor exit early.
+        Self::require_unlocked(&env, &caller)?;
 
         let balance = Self::read_balance(&env, &caller);
         if balance < wrapped_amount {
@@ -561,14 +775,12 @@ impl WrapperContract {
         let underlying_id = Self::read_underlying(&env);
         let underlying_client = TokenClient::new(&env, &underlying_id);
 
-        // Scale back to underlying decimals
+        // Scale back to underlying tokens, rounding down
         let underlying_decimals = underlying_client.decimals();
-        let wrapper_decimals = Self::wrapper_decimals(&env);
         let underlying_amount =
-            Self::scale_to_underlying(underlying_decimals, wrapper_decimals, wrapped_amount)
-                .unwrap_or_else(|| {
-                    soroban_sdk::panic_with_error!(&env, WrapperError::InvalidAmount)
-                });
+            Self::calc_assets_for_shares(&env, underlying_decimals, wrapped_amount).unwrap_or_else(
+                || soroban_sdk::panic_with_error!(&env, WrapperError::InvalidAmount),
+            );
 
         if underlying_amount <= 0 {
             Self::release_lock(&env);
@@ -584,6 +796,76 @@ impl WrapperContract {
 
         Self::release_lock(&env);
         events::emit_unwrap(&env, &caller, wrapped_amount, underlying_amount);
+        Ok(())
+    }
+
+    /// Rescues a foreign SEP-41 token balance out of the vault.
+    ///
+    /// SEP-41 tokens sent to the contract by mistake would otherwise be stuck:
+    /// nothing in the wrapper's own interface moves a balance that does not
+    /// belong to a shareholder who can sign. This escape hatch lets the admin
+    /// send such a stranded balance to a recovery address.
+    ///
+    /// The ban covers two ids. The token stored at initialization as the
+    /// underlying asset — the one whose contract balance [`WrapperContract::total_assets`]
+    /// reports and whose movements back `unwrap`/`withdraw` — can never be
+    /// rescued, and reverts with [`WrapperError::UnderlyingAssetProtected`].
+    /// This vault's own share token is also rejected with
+    /// [`WrapperError::ShareTokenProtected`], because shares sitting on the
+    /// vault address are not a foreign balance. Every accounted user asset sits
+    /// under the underlying id, so banning it bans the whole of `total_assets`.
+    /// Any *other* token id is rescuable:
+    /// the wrapper never accounts balances of a token it does not wrap, so no
+    /// accounted funds can sit under a foreign id.
+    ///
+    /// # Security
+    ///
+    /// - Admin-gated: reverts unless `caller` holds the `Admin` role (or the
+    ///   implicit all-roles grant the admin carries) via
+    ///   [`admin::require_admin`].
+    /// - `amount` must be positive.
+    /// - Emits a `rescue` event on success.
+    ///
+    /// @notice Sends `amount` of the foreign SEP-41 token at `token` held by
+    ///         this vault to `to`. Admin only; the underlying asset is
+    ///         rejected and can never be rescued.
+    /// @param caller The address requesting the rescue; must hold the Admin role.
+    /// @param token The contract id of the stranded SEP-41 token to rescue.
+    /// @param to The recovery address receiving the rescued balance.
+    /// @param amount The amount of `token` to move to `to`; must be positive.
+    /// @return `Ok(())` on success, [`WrapperError::UnderlyingAssetProtected`]
+    ///         when `token` is the underlying asset, [`WrapperError::InvalidRescueAmount`]
+    ///         when `amount <= 0`, or [`WrapperError::NotInitialized`] when the
+    ///         contract is uninitialized.
+    pub fn rescue_tokens(
+        env: Env,
+        caller: Address,
+        token: Address,
+        to: Address,
+        amount: i128,
+    ) -> Result<(), WrapperError> {
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+
+        let underlying_id = Self::read_underlying(&env);
+        if token == underlying_id {
+            return Err(WrapperError::UnderlyingAssetProtected);
+        }
+        if token == env.current_contract_address() {
+            return Err(WrapperError::ShareTokenProtected);
+        }
+        if amount <= 0 {
+            return Err(WrapperError::InvalidRescueAmount);
+        }
+
+        let client = TokenClient::new(&env, &token);
+        let contract_balance = client.balance(&env.current_contract_address());
+        if contract_balance < amount {
+            return Err(WrapperError::InsufficientBalance);
+        }
+
+        client.transfer(&env.current_contract_address(), &to, &amount);
+        events::emit_rescued(&env, &caller, &token, &to, amount);
         Ok(())
     }
 
@@ -831,34 +1113,73 @@ impl WrapperContract {
             .ok_or(WrapperError::InvalidAmount)
     }
 
+    /// Configures the withdrawal cooldown mode and per-user emergency cap. Admin-only.
+    pub fn set_cooldown_config(
+        env: Env,
+        caller: Address,
+        config: CooldownConfig,
+    ) -> Result<(), WrapperError> {
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+
+        if config.emergency_cap < 0 {
+            return Err(WrapperError::InvalidAmount);
+        }
+
+        Self::write_cooldown_config(&env, &config);
+        events::emit_cooldown_config_set(&env, &caller, &config);
+        Ok(())
+    }
+
+    /// Returns the current withdrawal cooldown and emergency cap configuration.
+    pub fn get_cooldown_config(env: Env) -> Result<CooldownConfig, WrapperError> {
+        Self::ensure_initialized(&env)?;
+        Ok(Self::read_cooldown_config(&env))
+    }
+
+    /// Returns any pending queued withdrawal for `user`.
+    pub fn get_queued_withdrawal(
+        env: Env,
+        user: Address,
+    ) -> Result<Option<QueuedWithdrawal>, WrapperError> {
+        Self::ensure_initialized(&env)?;
+        Ok(Self::read_queued_withdrawal(&env, &user))
+    }
+
+    /// Claim a queued withdrawal after the cooldown release ledger has passed.
+    pub fn claim_withdrawal(env: Env, caller: Address) -> Result<i128, WrapperError> {
+        Self::ensure_initialized(&env)?;
+        Self::ensure_not_paused(&env)?;
+        caller.require_auth();
+
+        let queued =
+            Self::read_queued_withdrawal(&env, &caller).ok_or(WrapperError::NoQueuedWithdrawal)?;
+
+        if env.ledger().sequence() < queued.release_ledger {
+            return Err(WrapperError::CooldownNotMet);
+        }
+
+        Self::acquire_lock(&env)?;
+        Self::remove_queued_withdrawal(&env, &caller);
+
+        let underlying_id = Self::read_underlying(&env);
+        let underlying_client = TokenClient::new(&env, &underlying_id);
+        underlying_client.transfer(&env.current_contract_address(), &caller, &queued.amount);
+
+        Self::release_lock(&env);
+        events::emit_withdraw(&env, &caller, queued.shares, queued.amount);
+        Ok(queued.amount)
+    }
+
     /// Withdraw `shares` of wrapped tokens and receive a proportional share of
     /// the vault's underlying assets, including any accrued yield.
     ///
     /// Burns `shares` from `caller` and transfers
     /// `tokens_out = shares * total_assets / total_shares` underlying tokens
-    /// back to `caller`. Because rewards distributed via
-    /// [`WrapperContract::distribute_rewards`] increase `total_assets` without
-    /// increasing `total_shares`, withdrawing after a reward distribution
-    /// returns more underlying tokens than the original deposit.
+    /// back to `caller`.
     ///
-    /// Rounding favors the protocol: `tokens_out` is rounded down, and the
-    /// withdrawal reverts if the payout would round down to zero.
-    ///
-    /// # Arguments
-    /// * `env`    - The Soroban environment.
-    /// * `caller` - Address whose shares are being withdrawn.
-    /// * `shares` - Amount of wrapped shares to burn.
-    ///
-    /// # Returns
-    /// The amount of underlying tokens transferred to `caller`.
-    ///
-    /// # Errors
-    /// * Returns [`WrapperError::NotInitialized`] if contract is uninitialized.
-    /// * Returns [`WrapperError::ContractPaused`] if operations are paused.
-    /// * Returns [`WrapperError::InvalidAmount`] if `shares` is non-positive or
-    ///   if the proportional payout rounds down to zero.
-    /// * Returns [`WrapperError::InsufficientBalance`] if `shares` exceeds the
-    ///   caller's wrapped balance.
+    /// When cooldown mode is ON, records a queued withdrawal and defers token transfer
+    /// until [`claim_withdrawal`] is called at or after the release ledger.
     ///
     /// # Security
     /// Protected by a reentrancy guard.
@@ -867,8 +1188,20 @@ impl WrapperContract {
         Self::ensure_not_paused(&env)?;
         caller.require_auth();
 
-        if shares <= 0 {
+        if shares == 0 {
+            if Self::read_queued_withdrawal(&env, &caller).is_some() {
+                return Self::claim_withdrawal(env, caller);
+            } else {
+                return Err(WrapperError::InvalidAmount);
+            }
+        }
+
+        if shares < 0 {
             return Err(WrapperError::InvalidAmount);
+        }
+
+        if Self::read_queued_withdrawal(&env, &caller).is_some() {
+            return Err(WrapperError::CooldownNotMet);
         }
 
         // #730 – enforce the deposit time lockup: revert while the caller's
@@ -900,16 +1233,36 @@ impl WrapperContract {
             return Err(WrapperError::InvalidAmount);
         }
 
+        let config = Self::read_cooldown_config(&env);
+        if let Err(e) = Self::check_and_update_emergency_cap(&env, &caller, tokens_out, &config) {
+            Self::release_lock(&env);
+            return Err(e);
+        }
+
         // Burn shares
         Self::write_balance(&env, &caller, balance - shares);
         Self::write_supply(&env, total_shares - shares);
 
-        // Transfer proportional underlying tokens to caller
-        underlying_client.transfer(&env.current_contract_address(), &caller, &tokens_out);
-
-        Self::release_lock(&env);
-        events::emit_withdraw(&env, &caller, shares, tokens_out);
-        Ok(tokens_out)
+        if config.enabled {
+            let release_ledger = env
+                .ledger()
+                .sequence()
+                .saturating_add(config.cooldown_ledgers);
+            let queued = QueuedWithdrawal {
+                shares,
+                amount: tokens_out,
+                release_ledger,
+            };
+            Self::write_queued_withdrawal(&env, &caller, &queued);
+            Self::release_lock(&env);
+            events::emit_withdraw_queued(&env, &caller, shares, tokens_out, release_ledger);
+            Ok(0)
+        } else {
+            underlying_client.transfer(&env.current_contract_address(), &caller, &tokens_out);
+            Self::release_lock(&env);
+            events::emit_withdraw(&env, &caller, shares, tokens_out);
+            Ok(tokens_out)
+        }
     }
 
     /// Enforce the deposit time lockup: records the timestamp at which `user`'s
@@ -962,7 +1315,6 @@ impl WrapperContract {
         events::emit_unlock_time_cleared(&env, &caller, &user);
         Ok(())
     }
-
     /// Returns the timestamp at which `user`'s deposit becomes withdrawable,
     /// or `None` when no lockup is recorded for the user.
     pub fn get_unlock_time(env: Env, user: Address) -> Option<u64> {
@@ -970,9 +1322,96 @@ impl WrapperContract {
         Self::read_unlock_time(&env, &user)
     }
 
+    /// Sets the vault parameters, deposit limits, exchange rate, and fee accumulation state.
+    ///
+    /// # Arguments
+    /// * `env`    - The Soroban environment.
+    /// * `caller` - Address calling this function; must have Admin authorization.
+    /// * `state`  - The complete [`VaultState`] configuration.
+    ///
+    /// # Errors
+    /// * Returns [`WrapperError::NotInitialized`] if contract is uninitialized.
+    /// * Returns [`WrapperError::InvalidVaultState`] if `fee_rate_bps > 10_000`, `min_deposit < 0`,
+    ///   `max_deposit < min_deposit`, `exchange_rate <= 0`, or `accumulated_fees < 0`.
+    pub fn set_vault_state(
+        env: Env,
+        caller: Address,
+        state: VaultState,
+    ) -> Result<(), WrapperError> {
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+
+        if state.fee_rate_bps > 10_000
+            || state.min_deposit < 0
+            || state.max_deposit < state.min_deposit
+            || state.exchange_rate <= 0
+            || state.accumulated_fees < 0
+        {
+            return Err(WrapperError::InvalidVaultState);
+        }
+
+        Self::write_vault_state(&env, &state);
+        events::emit_vault_state_set(&env, &caller, &state);
+        Ok(())
+    }
+
+    /// Returns the current vault parameters and accumulation state.
+    ///
+    /// # Errors
+    /// * Returns [`WrapperError::NotInitialized`] if contract is uninitialized.
+    /// * Returns [`WrapperError::VaultStateNotSet`] if the vault state has not been configured.
+    pub fn get_vault_state(env: Env) -> Result<VaultState, WrapperError> {
+        Self::ensure_initialized(&env)?;
+        Self::read_vault_state(&env)
+    }
+
     /// Returns the contract version string.
     pub fn version(env: Env) -> String {
         String::from_str(&env, "1.0.0")
+    }
+
+    /// Converts underlying assets to vault shares, strictly rounding down (floor).
+    ///
+    /// # Errors
+    /// * Returns [`WrapperError::NotInitialized`] if contract is uninitialized.
+    /// * Returns [`WrapperError::InvalidAmount`] if amount is non-positive or overflows.
+    pub fn convert_to_shares(env: Env, assets: i128) -> Result<i128, WrapperError> {
+        Self::ensure_initialized(&env)?;
+        if assets <= 0 {
+            return Err(WrapperError::InvalidAmount);
+        }
+        let underlying_id = Self::read_underlying(&env);
+        let underlying_client = TokenClient::new(&env, &underlying_id);
+        let underlying_decimals = underlying_client.decimals();
+        Self::calc_shares_for_assets(&env, underlying_decimals, assets)
+            .ok_or(WrapperError::InvalidAmount)
+    }
+
+    /// Converts vault shares to underlying assets, strictly rounding down (floor).
+    ///
+    /// # Errors
+    /// * Returns [`WrapperError::NotInitialized`] if contract is uninitialized.
+    /// * Returns [`WrapperError::InvalidAmount`] if amount is non-positive or overflows.
+    pub fn convert_to_assets(env: Env, shares: i128) -> Result<i128, WrapperError> {
+        Self::ensure_initialized(&env)?;
+        if shares <= 0 {
+            return Err(WrapperError::InvalidAmount);
+        }
+        let underlying_id = Self::read_underlying(&env);
+        let underlying_client = TokenClient::new(&env, &underlying_id);
+        let underlying_decimals = underlying_client.decimals();
+        Self::calc_assets_for_shares(&env, underlying_decimals, shares)
+            .ok_or(WrapperError::InvalidAmount)
+    }
+
+    /// Simulates a deposit and returns the number of shares that would be minted, rounding down.
+    pub fn preview_deposit(env: Env, assets: i128) -> Result<i128, WrapperError> {
+        Self::convert_to_shares(env, assets)
+    }
+
+    /// Simulates a withdrawal and returns the number of assets that would be returned, rounding down.
+    pub fn preview_withdraw(env: Env, shares: i128) -> Result<i128, WrapperError> {
+        Self::convert_to_assets(env, shares)
     }
 }
 

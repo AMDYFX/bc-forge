@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 import { describe, it, expect } from "vitest";
 import { Command } from "commander";
 import {
@@ -128,6 +129,18 @@ describe("CLI network selection (#684)", () => {
       const merged = mergeNetworkOptions(child);
       expect(merged.network).toBe("local");
       expect(merged.rpcUrl).toBe("https://parent.example");
+    });
+
+    it("inherits a global network flag through nested subcommands", () => {
+      const root = addNetworkOptions(new Command("bc-forge"), { withDefault: true });
+      const group = root.command("deployments");
+      const child = addNetworkOptions(group.command("register"));
+
+      root.setOptionValue("network", "mainnet");
+      expect(mergeNetworkOptions(child).network).toBe("mainnet");
+
+      child.setOptionValue("network", "local");
+      expect(mergeNetworkOptions(child).network).toBe("local");
     });
 
     it("reports only flags that were passed on the CLI", () => {

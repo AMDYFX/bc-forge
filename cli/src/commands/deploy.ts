@@ -1,8 +1,11 @@
+// SPDX-License-Identifier: MIT
 import { Command } from 'commander';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { addNetworkOptions, explicitNetworkOverrides } from '../network.js';
 import { getClientConfig } from '../utils/config.js';
+import { buildDeploymentArtifacts, exportDeploymentsToFile } from '../utils/deployments.js';
+import { resolveContractIdOption } from '../utils/registry.js';
 import logger from '../utils/logger.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -32,6 +35,8 @@ export interface DeployVaultOptions {
   network?: string;
   /** If true, print commands but do not execute them. */
   dryRun?: boolean;
+  /** Target path to export deployed contract IDs and transaction hashes (e.g. "deployments.json"). */
+  out?: string;
 }
 
 export interface DeployVaultResult {
@@ -41,6 +46,7 @@ export interface DeployVaultResult {
   vaultWasmHash?: string;
   feeWasmHash?: string;
   linkTxHash?: string;
+  outPath?: string;
   message: string;
   steps: string[];
 }
@@ -283,6 +289,23 @@ export async function deployVault(opts: DeployVaultOptions): Promise<DeployVault
       }
     }
 
+    let outPath: string | undefined;
+    if (opts.out) {
+      const artifacts = buildDeploymentArtifacts({
+        network: opts.network,
+        rpcUrl: opts.rpcUrl,
+        vaultContractId,
+        vaultWasmHash,
+        feeContractId,
+        feeWasmHash,
+        linkTxHash,
+      });
+      const exportRes = exportDeploymentsToFile(artifacts, opts.out);
+      if (exportRes.success) {
+        outPath = exportRes.filePath;
+      }
+    }
+
     const message = dryRun
       ? 'Dry-run completed — no contracts were actually deployed.'
       : `Vault deployment complete. Contract ID: ${vaultContractId ?? '(dry-run)'}`;
@@ -294,6 +317,7 @@ export async function deployVault(opts: DeployVaultOptions): Promise<DeployVault
       vaultWasmHash,
       feeWasmHash,
       linkTxHash,
+      outPath,
       message,
       steps,
     };
@@ -315,10 +339,11 @@ export function createDeployCommand(): Command {
     .option('--fee-wasm <path>', 'Path to the fee contract WASM binary (optional)')
     .requiredOption('--admin <address>', 'Admin address for the deployed vault')
     .requiredOption('--source <secret>', 'Source account secret key for signing transactions')
-    .requiredOption('--underlying-token <id>', 'Underlying SEP-41 token contract ID to wrap')
+    .requiredOption('--underlying-token <id>', 'Underlying SEP-41 token contract id, or a deployment alias')
     .requiredOption('--name <name>', 'Human-readable name for the wrapped token')
     .requiredOption('--symbol <symbol>', 'Ticker symbol for the wrapped token')
     .option('--decimals <n>', 'Decimal places (default: 7)', '7')
+    .option('-o, --out <path>', 'Output file path to export deployment artifact JSON (e.g. deployments.json)')
     .option('--dry-run', 'Print commands but do not execute them', false);
 
   addNetworkOptions(cmd);
@@ -326,13 +351,14 @@ export function createDeployCommand(): Command {
   cmd.action(async (opts, command) => {
     try {
       const netCfg = getClientConfig(explicitNetworkOverrides(command));
+      const underlyingToken = resolveContractIdOption(command, opts.underlyingToken) ?? opts.underlyingToken;
 
       const result = await deployVault({
         vaultWasm: opts.vaultWasm,
         feeWasm: opts.feeWasm,
         admin: opts.admin,
         source: opts.source,
-        underlyingToken: opts.underlyingToken,
+        underlyingToken,
         name: opts.name,
         symbol: opts.symbol,
         decimals: parseInt(opts.decimals, 10),
@@ -340,6 +366,7 @@ export function createDeployCommand(): Command {
         networkPassphrase: netCfg.networkPassphrase,
         network: netCfg.network,
         dryRun: opts.dryRun,
+        out: opts.out,
       });
 
       if (result.success) {
@@ -349,6 +376,9 @@ export function createDeployCommand(): Command {
         }
         if (result.feeContractId) {
           logger.info(`  Fee contract ID   : ${result.feeContractId}`);
+        }
+        if (result.outPath) {
+          logger.info(`  Artifact exported : ${result.outPath}`);
         }
       } else {
         logger.error(result.message);
