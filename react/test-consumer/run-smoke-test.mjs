@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -7,86 +8,106 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const reactDir = path.resolve(__dirname, '..');
 const rootDir = path.resolve(reactDir, '..');
 const sdkDir = path.resolve(rootDir, 'sdk');
-const consumerDir = path.resolve(reactDir, 'test-consumer');
+const fixtureDir = path.resolve(reactDir, 'test-consumer');
+const requiredPeers = ['react', 'react-dom', '@stellar/stellar-sdk'];
 
-function run(command, cwd, quiet = true) {
+function run(command, cwd) {
   return execSync(command, {
     cwd,
-    stdio: quiet ? ['ignore', 'pipe', 'pipe'] : 'inherit',
+    stdio: ['ignore', 'pipe', 'pipe'],
     encoding: 'utf-8',
   });
 }
 
+function runInherit(command, cwd) {
+  execSync(command, { cwd, stdio: 'inherit' });
+}
+
+function expectBuildFailure(cwd, label) {
+  try {
+    run('npm run build', cwd);
+  } catch (err) {
+    console.log(`Negative test passed: ${label} failed the production build.`);
+    return;
+  }
+  throw new Error(`Expected the production build to fail for ${label}.`);
+}
+
 console.log('Building SDK and React packages...');
-run('npm run build', sdkDir, false);
-run('npm run build', reactDir, false);
+runInherit('npm run build', sdkDir);
+runInherit('npm run build', reactDir);
 
 console.log('Packing SDK and React tarballs...');
 const sdkPackResult = JSON.parse(run('npm pack --json --ignore-scripts', sdkDir));
 const sdkTarball = path.join(sdkDir, sdkPackResult[0].filename);
-
 const reactPackResult = JSON.parse(run('npm pack --json --ignore-scripts', reactDir));
 const reactTarball = path.join(reactDir, reactPackResult[0].filename);
 
+const workRoot = path.join(os.tmpdir(), `bc-forge-react-consumer-${Date.now()}`);
+mkdirSync(workRoot, { recursive: true });
+
 try {
-  console.log('Installing packed tarball and supported peers into react/test-consumer...');
-  run(`npm install --no-save "${sdkTarball}" "${reactTarball}"`, consumerDir, false);
+  const packedManifest = JSON.parse(readFileSync(path.join(reactDir, 'package.json'), 'utf8'));
+  const declaredPeers = packedManifest.peerDependencies ?? {};
+  for (const name of requiredPeers) {
+    if (!declaredPeers[name]) {
+      throw new Error(`@bc-forge/react package.json is missing peer dependency "${name}".`);
+    }
+  }
 
-  console.log('Running production build in react/test-consumer...');
-  run('npm run build', consumerDir, false);
+  const consumerDir = path.join(workRoot, 'consumer');
+  cpSync(fixtureDir, consumerDir, {
+    recursive: true,
+    filter: (source) => !source.includes(`${path.sep}node_modules${path.sep}`) && !source.endsWith(`${path.sep}dist`),
+  });
 
+  console.log('Installing packed tarball and supported peers...');
+  run(`npm install --no-save "${sdkTarball}" "${reactTarball}"`, consumerDir);
+  const installedFrom = JSON.parse(
+    readFileSync(path.join(consumerDir, 'node_modules', '@bc-forge', 'react', 'package.json'), 'utf8'),
+  );
+  if (!installedFrom.peerDependencies?.react) {
+    throw new Error('Packed tarball is missing the react peer dependency.');
+  }
+  console.log('Packed tarball declares the required peer dependencies.');
+
+  console.log('Running production build against the packed tarball...');
+  runInherit('npm run build', consumerDir);
   const bundlePath = path.join(consumerDir, 'dist', 'bundle.js');
   if (!existsSync(bundlePath)) {
     throw new Error('Production build failed to generate dist/bundle.js');
   }
+  console.log('Positive test passed: production build rendered a component and imported a hook.');
 
-  console.log('Positive test passed: Production build succeeded consuming packed tarball.');
-
-  // Negative test 1: Missing export must fail the build
-  console.log('Testing negative case: Missing export...');
-  const indexPath = path.join(consumerDir, 'src', 'index.tsx');
-  const originalIndexContent = readFileSync(indexPath, 'utf-8');
-  const badExportContent = originalIndexContent.replace(
-    "import { Badge, Alert, useWallet, useBcForgeToken } from '@bc-forge/react';",
-    "import { Badge, NonExistentComponent } from '@bc-forge/react';\nconsole.log(NonExistentComponent);"
+  const missingExportDir = path.join(workRoot, 'missing-export');
+  cpSync(consumerDir, missingExportDir, { recursive: true });
+  rmSync(path.join(missingExportDir, 'dist'), { recursive: true, force: true });
+  writeFileSync(
+    path.join(missingExportDir, 'src', 'index.tsx'),
+    "import { NonExistentComponent } from '@bc-forge/react';\nconsole.log(NonExistentComponent);\n",
+    'utf8',
   );
+  console.log('Testing negative case: missing export...');
+  expectBuildFailure(missingExportDir, 'a missing export');
 
-  let missingExportFailed = false;
-  try {
-    writeFileSync(indexPath, badExportContent, 'utf-8');
-    run('npm run build', consumerDir, true);
-  } catch (err) {
-    missingExportFailed = true;
-    console.log('Negative test passed: Missing export correctly failed the build.');
-  } finally {
-    writeFileSync(indexPath, originalIndexContent, 'utf-8');
-  }
-
-  if (!missingExportFailed) {
-    throw new Error('Expected build to fail for missing export, but it succeeded!');
-  }
-
-  // Negative test 2: Missing peer declaration / missing peer import must fail
-  console.log('Testing negative case: Invalid peer import...');
-  const badPeerContent = "import { Badge } from '@bc-forge/react';\nimport { InvalidPeer } from 'non-existent-peer';\nconsole.log(Badge, InvalidPeer);";
-  let missingPeerFailed = false;
-  try {
-    writeFileSync(indexPath, badPeerContent, 'utf-8');
-    run('npm run build', consumerDir, true);
-  } catch (err) {
-    missingPeerFailed = true;
-    console.log('Negative test passed: Missing peer dependency correctly failed the build.');
-  } finally {
-    writeFileSync(indexPath, originalIndexContent, 'utf-8');
-  }
-
-  if (!missingPeerFailed) {
-    throw new Error('Expected build to fail for invalid peer dependency, but it succeeded!');
-  }
+  const missingPeerDir = path.join(workRoot, 'missing-peer');
+  cpSync(fixtureDir, missingPeerDir, {
+    recursive: true,
+    filter: (source) => !source.includes(`${path.sep}node_modules${path.sep}`) && !source.endsWith(`${path.sep}dist`),
+  });
+  const peerManifest = JSON.parse(readFileSync(path.join(missingPeerDir, 'package.json'), 'utf8'));
+  delete peerManifest.dependencies.react;
+  delete peerManifest.dependencies['react-dom'];
+  delete peerManifest.devDependencies['@types/react'];
+  delete peerManifest.devDependencies['@types/react-dom'];
+  writeFileSync(path.join(missingPeerDir, 'package.json'), `${JSON.stringify(peerManifest, null, 2)}\n`);
+  console.log('Testing negative case: missing peer dependency...');
+  run(`npm install --legacy-peer-deps --no-save "${sdkTarball}" "${reactTarball}"`, missingPeerDir);
+  expectBuildFailure(missingPeerDir, 'a missing peer dependency');
 
   console.log('All React package consumer smoke tests passed successfully!');
 } finally {
   rmSync(sdkTarball, { force: true });
   rmSync(reactTarball, { force: true });
-  rmSync(path.join(consumerDir, 'dist'), { recursive: true, force: true });
+  rmSync(workRoot, { recursive: true, force: true });
 }
