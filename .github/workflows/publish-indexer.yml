@@ -1,0 +1,136 @@
+name: Publish indexer image
+
+# Scan the built indexer image before any stable tag moves (#1052).
+# Fixable critical vulnerabilities fail the job unless .github/vulnerability-exceptions.yml
+# names that advisory and an unexpired expiry date. The SARIF report is retained.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'indexer/**'
+      - '.github/workflows/publish-indexer.yml'
+      - '.github/vulnerability-exceptions.yml'
+      - 'SECURITY.md'
+  pull_request:
+    paths:
+      - 'indexer/**'
+      - '.github/workflows/publish-indexer.yml'
+      - '.github/vulnerability-exceptions.yml'
+      - 'SECURITY.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Scan indexer image before stable tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build indexer image
+        run: docker build -f indexer/Dockerfile -t bc-forge-indexer:scan .
+
+      - name: Scan image for critical vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: bc-forge-indexer:scan
+          format: json
+          output: trivy-results.json
+          severity: CRITICAL
+          exit-code: '0'
+          vuln-type: os,library
+
+      - name: Write SARIF report
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: bc-forge-indexer:scan
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+          vuln-type: os,library
+
+      - name: Fail on fixable critical vulnerabilities
+        run: |
+          python3 - << 'PY'
+          import datetime
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          raw = Path(".github/vulnerability-exceptions.yml").read_text(encoding="utf-8")
+          lines = [line for line in raw.splitlines() if not line.strip().startswith("#")]
+          blocks = re.split(r"\n(?=  - )", "\n" + "\n".join(lines))
+          exceptions = {}
+          for block in blocks:
+              cve_match = re.search(r"(?m)^\s*- cve:\s*(\S+)\s*$", block)
+              if not cve_match:
+                  continue
+              cve = cve_match.group(1)
+              advisory_match = re.search(r"(?m)^\s*advisory:\s*(\S+)\s*$", block)
+              expires_match = re.search(r"(?m)^\s*expires:\s*(\d{4}-\d{2}-\d{2})\s*$", block)
+              if not advisory_match or not expires_match:
+                  print(f"::error::Exception {cve} must include an advisory id and an expiry date (YYYY-MM-DD).")
+                  sys.exit(1)
+              exceptions[cve] = (advisory_match.group(1), expires_match.group(1))
+
+          report = json.loads(Path("trivy-results.json").read_text(encoding="utf-8"))
+          today = datetime.date.today()
+          blocked = []
+          for result in report.get("Results") or []:
+              for vuln in result.get("Vulnerabilities") or []:
+                  if vuln.get("Severity") != "CRITICAL":
+                      continue
+                  fixed = (vuln.get("FixedVersion") or "").strip()
+                  if not fixed:
+                      continue
+                  vid = vuln.get("VulnerabilityID") or ""
+                  exception = exceptions.get(vid)
+                  if exception is None:
+                      blocked.append(f"{vid} in {vuln.get('PkgName')} is fixable in {fixed} and has no exception")
+                      continue
+                  advisory, expires = exception
+                  if datetime.date.fromisoformat(expires) < today:
+                      blocked.append(f"{vid} exception {advisory} expired on {expires}")
+          if blocked:
+              for item in blocked:
+                  print(f"::error::{item}")
+              sys.exit(1)
+          print(f"No blocking fixable critical vulnerabilities ({len(exceptions)} exception rule(s)).")
+          PY
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-indexer-report
+          path: |
+            trivy-results.json
+            trivy-results.sarif
+          retention-days: 90
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-indexer
+
+      - name: Move stable tag
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/bc-forge-indexer"
+          docker tag bc-forge-indexer:scan "${image}:sha-${GITHUB_SHA}"
+          docker tag bc-forge-indexer:scan "${image}:latest"
+          docker push "${image}:sha-${GITHUB_SHA}"
+          docker push "${image}:latest"
