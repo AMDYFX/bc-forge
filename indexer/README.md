@@ -218,6 +218,8 @@ than a silent failure.
 | `RPC_URL` | No | Defaults to `https://soroban-testnet.stellar.org`; set to a mainnet RPC for production |
 | `PORT` | No | Defaults to `3000`; must be an integer |
 | `INDEXER_LAG_THRESHOLD` | No | Defaults to `100` ledgers; tune based on acceptable lag |
+| `INDEXER_RATE_LIMIT_MAX` | No | Optional request cap; a non-integer value is ignored and the built-in default is used |
+| `INDEXER_RATE_LIMIT_WINDOW_MS` | No | Optional rate-limit window in milliseconds |
 
 Quick shell validation (substitute your actual secret names):
 
@@ -235,6 +237,35 @@ echo "$DATABASE_URL" | grep -q '^postgresql://' \
 echo "$CONTRACT_ID" | grep -qE '^C[A-Z2-7]{55}$' \
   || { echo "CONTRACT_ID does not look like a valid Stellar contract address"; exit 1; }
 ```
+
+---
+
+### Migration order
+
+Production startup migrates before it serves traffic. Do not start the API
+against a database that has not applied the current Prisma migrations.
+
+1. Validate the environment in the section above. A missing `CONTRACT_ID`
+   crashes startup with `CONTRACT_ID environment variable is required`. A
+   missing or rejected `DATABASE_URL` fails in Prisma before the loop starts.
+   `INDEXER_API_TOKEN` must be a real secret; the API rejects callers that do
+   not present it.
+2. Apply migrations with `npx prisma migrate deploy --schema indexer/prisma/schema.prisma`.
+   Prisma runs each directory under `indexer/prisma/migrations` in
+   lexicographic order (the timestamp prefix). Do not rename or edit a
+   migration that has already been applied. Do not use `prisma migrate dev` or
+   `prisma migrate reset` on a production database; reset drops data.
+3. Start the server only after `migrate deploy` exits 0. The Compose stack
+   does steps 2 and 3 itself (see
+   [How migrations run in the container](#how-migrations-run-in-the-container)).
+   A standalone `docker run` does not: run migrate deploy yourself, then start
+   the container (see [Database Migrations](#database-migrations)).
+4. Seeding (`npm run db:seed`) is not part of the production order. The seed
+   file contains no secrets; do not point it at a production database.
+
+A failed `migrate deploy` stops on the failed migration and leaves later
+migrations unapplied. Keep the server down until deploy exits 0. Starting
+without migrating fails requests that expect the new schema.
 
 ---
 
