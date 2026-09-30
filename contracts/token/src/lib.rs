@@ -347,7 +347,10 @@ impl BcForgeToken {
         amount: i128,
     ) -> Result<(), TokenError> {
         let from_balance = Self::read_balance(env, from);
-        if from_balance < amount {
+        let spendable = from_balance
+            .checked_sub(Self::get_locked_amount(env, from))
+            .ok_or(TokenError::InsufficientBalance)?;
+        if spendable < amount {
             return Err(TokenError::InsufficientBalance);
         }
 
@@ -1310,7 +1313,10 @@ impl TokenInterface for BcForgeToken {
         }
 
         let balance = Self::read_balance(&env, &from);
-        if balance < amount {
+        let spendable = balance
+            .checked_sub(Self::get_locked_amount(&env, &from))
+            .unwrap_or(0);
+        if spendable < amount {
             soroban_sdk::panic_with_error!(&env, TokenError::InsufficientBalance);
         }
 
@@ -1349,7 +1355,10 @@ impl TokenInterface for BcForgeToken {
 
         let allowance_data = Self::read_allowance_data(&env, &from, &spender);
         let balance = Self::read_balance(&env, &from);
-        if balance < amount {
+        let spendable = balance
+            .checked_sub(Self::get_locked_amount(&env, &from))
+            .unwrap_or(0);
+        if spendable < amount {
             soroban_sdk::panic_with_error!(&env, TokenError::InsufficientBalance);
         }
 
