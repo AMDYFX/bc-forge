@@ -179,12 +179,30 @@ pub enum TokenError {
     UnknownToken = 17,
     /// Metadata would change `decimals` after initialization (issue #911).
     DecimalsImmutable = 18,
+    /// No lock record exists for the requested holder.
+    LockupNotFound = 19,
+    /// The holder's lock has not reached its unlock timestamp.
+    TokensStillLocked = 20,
 }
 
 #[contract]
 pub struct BcForgeToken;
 
 impl BcForgeToken {
+    /// Removes a holder's complete lock after its unlock timestamp is reached.
+    pub fn withdraw_locked(env: Env, user: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
+        Self::ensure_initialized(&env)?;
+        user.require_auth();
+        let lock = Self::read_lockup(&env, &user).ok_or(TokenError::LockupNotFound)?;
+        if env.ledger().timestamp() < lock.unlock_timestamp {
+            return Err(TokenError::TokensStillLocked);
+        }
+        Self::remove_lockup(&env, &user);
+        events::emit_withdraw_locked(&env, &user, lock.amount);
+        Ok(())
+    }
+
     fn ensure_initialized(env: &Env) -> Result<(), TokenError> {
         if admin::has_admin(env) {
             Ok(())

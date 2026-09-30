@@ -32,7 +32,7 @@
 //! - `fee_exm`: `(caller, address, exemption_type, version)`
 //! - `fee_rmv`: `(caller, address, version)`
 
-use soroban_sdk::{symbol_short, Address, BytesN, Env, String};
+use soroban_sdk::{symbol_short, Address, BytesN, Env, String, Symbol};
 
 /// Schema version appended to every event data tuple emitted by this
 /// contract. Bump when the event field layout changes (#924).
@@ -401,5 +401,13 @@ pub fn emit_locked(env: &Env, user: &Address, amount: i128, unlock_timestamp: u6
     env.events().publish(
         (symbol_short!("locked"),),
         (user.clone(), amount, unlock_timestamp),
+    );
+}
+
+/// Emits an event when a holder releases an expired lock.
+pub fn emit_withdraw_locked(env: &Env, user: &Address, amount: i128) {
+    env.events().publish(
+        (Symbol::new(env, "withdraw_locked"),),
+        (user.clone(), amount),
     );
 }

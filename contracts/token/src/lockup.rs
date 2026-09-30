@@ -9,7 +9,7 @@
 
 use crate::{BcForgeToken, BcForgeTokenClient, DataKey, LockupState, TokenError};
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
-use soroban_sdk::{symbol_short, Address, Env, IntoVal, String, TryFromVal};
+use soroban_sdk::{symbol_short, Address, Env, IntoVal, String, Symbol, TryFromVal};
 
 fn setup(env: &Env) -> (BcForgeTokenClient<'_>, Address) {
     env.mock_all_auths();
@@ -115,6 +115,79 @@ fn non_admin_cannot_lock_tokens() {
     let user = Address::generate(&env);
     mint(&env, &client, &admin, &user, 100);
     assert!(client.try_lock_tokens(&stranger, &user, &10, &0).is_err());
+}
+
+#[test]
+fn holder_withdraws_expired_lock_without_changing_accounting() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 100);
+    client.lock_tokens(&admin, &user, &40, &50);
+    env.ledger().set_timestamp(50);
+    client.withdraw_locked(&user);
+    assert_eq!(client.balance(&user), 100);
+    assert_eq!(client.total_supply(), 100);
+    env.as_contract(&client.address, || {
+        assert_eq!(BcForgeToken::read_lockup(&env, &user), None)
+    });
+    let (_, topics, data) = env.events().all().last().unwrap();
+    assert_eq!(
+        topics.get(0).unwrap(),
+        Symbol::new(&env, "withdraw_locked").into_val(&env)
+    );
+    assert_eq!(
+        <(Address, i128)>::try_from_val(&env, &data).unwrap(),
+        (user.clone(), 40)
+    );
+    assert_eq!(
+        client.try_withdraw_locked(&user),
+        Err(Ok(TokenError::LockupNotFound))
+    );
+}
+
+#[test]
+fn early_withdraw_fails_and_preserves_lock() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 100);
+    client.lock_tokens(&admin, &user, &40, &51);
+    env.ledger().set_timestamp(50);
+    assert_eq!(
+        client.try_withdraw_locked(&user),
+        Err(Ok(TokenError::TokensStillLocked))
+    );
+    env.as_contract(&client.address, || {
+        assert_eq!(BcForgeToken::get_locked_amount(&env, &user), 40)
+    });
+}
+
+#[test]
+fn withdraw_requires_holder_authorization() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 100);
+    client.lock_tokens(&admin, &user, &40, &0);
+    env.mock_auths(&[]);
+    assert!(client.try_withdraw_locked(&user).is_err());
+    env.as_contract(&client.address, || {
+        assert_eq!(BcForgeToken::get_locked_amount(&env, &user), 40)
+    });
+}
+
+#[test]
+fn withdraw_requires_initialized_contract() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register(BcForgeToken, ());
+    let client = BcForgeTokenClient::new(&env, &id);
+    let user = Address::generate(&env);
+    assert_eq!(
+        client.try_withdraw_locked(&user),
+        Err(Ok(TokenError::NotInitialized))
+    );
 }
 
 #[test]
