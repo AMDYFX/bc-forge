@@ -40,6 +40,7 @@
     "dev": "tsup src/index.ts --format cjs,esm --watch --dts",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "jest",
+    "test:consumer": "node test-consumer/run-smoke-test.mjs",
     "e2e": "playwright test",
     "storybook": "storybook dev -p 6006 --no-open --disable-telemetry",
     "build-storybook": "storybook build --disable-telemetry",
