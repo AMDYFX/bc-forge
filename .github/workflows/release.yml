@@ -47,6 +47,7 @@ jobs:
             npm run build --workspace @bc-forge/cli
             npm run build --workspace @bc-forge/react
             npm config set provenance true
+            node scripts/check-version-tag.mjs --before-changeset-publish
             npx changeset publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
