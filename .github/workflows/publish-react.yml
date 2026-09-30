@@ -1,24 +1,22 @@
-name: Publish React
+name: Validate React package
 
-# Publishes @bc-forge/react only when a React release tag is pushed.
-# sdk-v*, cli-v*, indexer-v*, and bare v* tags do not trigger this workflow.
+# Not a second npm publisher. @bc-forge/react is published only by
+# release.yml (Changesets on push to main, id-token: write, provenance).
+# This workflow_call lints, tests, builds, and validates the tarball.
+# It does not authenticate to npm and does not run npm publish.
 #
-# Every npm command runs from the repository root. Do not set
-# defaults.run.working-directory to react/: `npm run build --workspace`
-# resolves workspaces from the root package.json.
+# Do not set defaults.run.working-directory to react/. Workspace commands
+# such as `npm run build --workspace` resolve from the repository root.
 
 on:
-  push:
-    tags:
-      - "react-v*"
+  workflow_call:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  publish:
-    name: Publish @bc-forge/react
+  validate:
+    name: Lint, test, and validate @bc-forge/react
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -27,13 +25,15 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
-          registry-url: https://registry.npmjs.org
+          node-version: '22'
           cache: npm
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Check the React version before publish
+        run: node scripts/check-version-tag.mjs --before-changeset-publish --component react
 
       - name: Lint
         run: npm run lint --workspace @bc-forge/react
@@ -48,27 +48,7 @@ jobs:
         run: npm run build --workspace @bc-forge/react
 
       - name: Validate the packed tarball
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/react-pack"
-          npm pack --workspace @bc-forge/react --pack-destination "$RUNNER_TEMP/react-pack"
-          tarball="$(find "$RUNNER_TEMP/react-pack" -name 'bc-forge-react-*.tgz' -print -quit)"
-          test -n "$tarball"
-          tar -tzf "$tarball" > "$RUNNER_TEMP/react-pack-list.txt"
-          for entry in package/dist/index.js package/dist/index.mjs package/dist/index.d.ts; do
-            grep -qx "$entry" "$RUNNER_TEMP/react-pack-list.txt" || { echo "missing $entry"; exit 1; }
-          done
-          if grep -E '^package/src/.*\.(ts|tsx)$' "$RUNNER_TEMP/react-pack-list.txt"; then
-            echo "tarball contains unbuilt sources"
-            exit 1
-          fi
+        run: node scripts/validate-react-tarball.mjs
 
-      - name: Guard the release tag against the package version
-        run: node scripts/check-version-tag.mjs "${GITHUB_REF_NAME}"
-
-      - name: Publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          npm config set provenance true
-          npm publish --workspace @bc-forge/react --access public
+      - name: Test the tarball listing check
+        run: node --test scripts/validate-react-tarball.test.mjs

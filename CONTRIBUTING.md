@@ -219,17 +219,19 @@ That job builds `@bc-forge/sdk`, `@bc-forge/cli`, and `@bc-forge/react` from the
 repository root before `npx changeset publish`. Do not remove those builds:
 React compiles against the SDK, and `dist/` is gitignored.
 
-[`.github/workflows/publish-react.yml`](.github/workflows/publish-react.yml)
-publishes `@bc-forge/react` only for tags that match `react-v*`. A `sdk-v*`,
-`cli-v*`, or other component tag does not trigger it, so those releases cannot
-publish React. The workflow runs from the repository root (`npm ci`, lint,
-test, SDK build, React build, tarball check, then `npm publish --access public`
-with provenance). Do not set `defaults.run.working-directory` to `react/`:
+[`.github/workflows/publish-react.yml`](.github/workflows/publish-react.yml) is a
+`workflow_call` used by `release.yml`. It lints, tests, builds, and validates
+the React tarball from the repository root. It does not publish and it does
+not use `NPM_TOKEN`. Do not set `defaults.run.working-directory` to `react/`:
 `npm run build --workspace` only resolves against the root `package.json`.
 
+`@bc-forge/react` is published only by the Changesets job in `release.yml`,
+with npm provenance (`id-token: write`). Changesets publishes a package when
+that package's version is new. An SDK or CLI release that does not bump
+`react/package.json` does not publish React. There is one publish job.
+
 Request a Changesets release with `npm run changeset` and name `@bc-forge/react`
-when the React package should ship from `main`. Push a `react-v<version>` tag
-only for the tag publisher, and only when that version is not already on npm.
+when the React package should ship from `main`.
 
 ## 📐 Architecture Guidelines
 
