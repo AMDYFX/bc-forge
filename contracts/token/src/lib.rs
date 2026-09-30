@@ -187,6 +187,10 @@ pub enum TokenError {
     /// none was proposed, it was already consumed, or it was cancelled
     /// (#914). Codes are append-only per this crate's ABI policy.
     PrivilegeProposalNotFound = 20,
+    /// No lock record exists for the requested holder.
+    LockupNotFound = 21,
+    /// The holder's lock has not reached its unlock timestamp.
+    TokensStillLocked = 22,
 }
 
 #[contract]
@@ -521,6 +525,23 @@ impl BcForgeToken {
             },
         );
         events::emit_locked(&env, &user, amount, stored_unlock);
+        Ok(())
+    }
+
+    /// Removes a holder's complete lock after its unlock timestamp is reached.
+    ///
+    /// Does not change the holder's balance or total supply. The holder must
+    /// authorize the call; an admin signature is not required.
+    pub fn withdraw_locked(env: Env, user: Address) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
+        Self::ensure_initialized(&env)?;
+        user.require_auth();
+        let lock = Self::read_lockup(&env, &user).ok_or(TokenError::LockupNotFound)?;
+        if env.ledger().timestamp() < lock.unlock_timestamp {
+            return Err(TokenError::TokensStillLocked);
+        }
+        Self::remove_lockup(&env, &user);
+        events::emit_withdraw_locked(&env, &user, lock.amount);
         Ok(())
     }
 
