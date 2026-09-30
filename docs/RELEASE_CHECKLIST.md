@@ -34,36 +34,33 @@ Release publish workflows enforce least-privilege permissions and require deploy
 ### Named GitHub Environments
 
 1. **`npm` Environment**:
-   - Referenced by [`release.yml`](../.github/workflows/release.yml), [`publish-sdk.yml`](../.github/workflows/publish-sdk.yml), and [`publish-cli.yml`](../.github/workflows/publish-cli.yml).
-   - Controls access to npm publishing secrets (`NPM_TOKEN`) and OIDC trusted publisher context.
+   - Referenced by the Changesets publish job in [`release.yml`](../.github/workflows/release.yml). That job is the npm publisher for `@bc-forge/sdk`, `@bc-forge/cli`, and `@bc-forge/react`. This repository does not add separate `publish-sdk.yml` or `publish-cli.yml` workflows, because a second publisher on `release: published` would publish those packages again after Changesets creates the GitHub Release.
+   - npm trusted publishing uses GitHub OIDC. The publisher record on npmjs must use workflow filename `release.yml` and environment name `npm`. The job grants `id-token: write` and does not send `NODE_AUTH_TOKEN` on the normal path.
+   - Fallback secret: store `NPM_TOKEN` as a secret on the `npm` environment, not as a repository-wide secret, and only wire it into the Changesets step for a one-off fallback publish.
 2. **`container` Environment**:
-   - Referenced by [`publish-release-manifest.yml`](../.github/workflows/publish-release-manifest.yml).
-   - Controls container image builds, checksum manifest generation, and GitHub release asset attachments.
+   - Referenced by [`publish-release-manifest.yml`](../.github/workflows/publish-release-manifest.yml), which builds the indexer image and attaches the image digest plus release assets.
+   - A future GHCR push workflow must use this same `container` environment, authenticate with `GITHUB_TOKEN`, and must not reuse npm secrets.
 
 ### GitHub Repository Settings & Required Reviewers
 
-The following environment settings must be configured under **Settings → Environments** in the GitHub repository interface:
+These settings cannot be expressed in workflow YAML. Configure them under **Settings → Environments**:
 
-- **Required Reviewers**: Enable required reviewers on both `npm` and `container` environments to mandate explicit approval from designated release maintainers before publish jobs can run.
-- **Deployment Branches**: Restrict deployment branches to `main` for `release.yml` and tag/release triggers for release event workflows.
-- **Environment Secrets**: Limit scope-sensitive secrets (such as fallback `NPM_TOKEN`) to the `npm` environment rather than repository-wide scope where applicable.
+- **Required reviewers**: enable required reviewers on both `npm` and `container` so a release maintainer must approve the job before it publishes.
+- **Deployment branches**: allow `main` for `release.yml`. Allow the release tags that trigger `publish-release-manifest.yml`.
+- **Environment secrets**: `NPM_TOKEN` belongs on `npm` only. The container job uses the built-in `GITHUB_TOKEN` and does not need an npm token or any other secret.
 
 ### Workflow Permissions Inventory
 
-All publish workflows set top-level `permissions: {}` to ensure any unspecified GitHub Actions permission defaults to `none`. Each job explicitly declares only the least-privilege permissions required:
+Publish workflows set top-level `permissions: {}` so every unspecified `GITHUB_TOKEN` permission is `none`. Each job then opts into only what it uses:
 
-- **`release.yml`** (`release` job):
-  - `contents: write` (push release commits/tags)
-  - `id-token: write` (mint OIDC tokens for npm provenance)
-  - `pull-requests: write` (open and update version PRs)
-- **`publish-sdk.yml`** (`publish` job):
-  - `contents: read` (checkout code)
-  - `id-token: write` (npm provenance attestation)
-- **`publish-cli.yml`** (`publish` job):
-  - `contents: read` (checkout code)
-  - `id-token: write` (npm provenance attestation)
-- **`publish-release-manifest.yml`** (`manifest` job):
-  - `contents: write` (upload release assets and checksums to GitHub Release)
+- **`release.yml`** (`release` job, environment `npm`):
+  - `contents: write` (push release commits and tags)
+  - `id-token: write` (OIDC token for npm provenance)
+  - `pull-requests: write` (open and update the Changesets version PR)
+- **`publish-release-manifest.yml`** (`manifest` job, environment `container`):
+  - `contents: write` (upload the indexer image digest, checksums, and release assets)
+
+Any later component publisher must keep `permissions: {}` at the workflow root, declare job permissions explicitly, and select `environment: npm` or `environment: container`. It must not grant `packages: write` to an npm job or `id-token: write` to a container job unless that job needs it.
 
 ## Fallback secret and rotation
 
