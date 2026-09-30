@@ -2,8 +2,11 @@ name: Publish indexer image
 
 # Builds indexer/Dockerfile and publishes the image to GHCR when an indexer
 # release tag lands. The same final image is smoke-tested against fresh
-# Postgres before any registry write. Component tags (sdk-v*, cli-v*, react-v*)
-# do not match this filter, so they never push an image.
+# Postgres before any registry write. Before a stable tag moves, Trivy scans
+# that image and fails on fixable critical vulnerabilities unless
+# .github/vulnerability-exceptions.yml names the advisory and an unexpired
+# expiry (#1052). The SARIF report is retained. Component tags (sdk-v*, cli-v*,
+# react-v*) do not match this filter, so they never push an image.
 #
 # Tag convention: indexer-v<semver>, e.g. indexer-v1.2.3 or indexer-v1.2.3-rc.1
 on:
@@ -14,6 +17,8 @@ on:
     paths:
       - 'indexer/**'
       - '.github/workflows/publish-indexer.yml'
+      - '.github/vulnerability-exceptions.yml'
+      - 'SECURITY.md'
       - 'package-lock.json'
       - 'sdk/**'
 
@@ -30,6 +35,10 @@ jobs:
   publish:
     name: Smoke Test & Publish Indexer
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     services:
       postgres:
         image: postgres:16-alpine
@@ -160,6 +169,93 @@ jobs:
         if: always()
         run: docker rm -f indexer-smoke-target || true
 
+      - name: Scan image for critical vulnerabilities
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: bc-forge-indexer:smoke
+          format: json
+          output: trivy-results.json
+          severity: CRITICAL
+          exit-code: '0'
+          vuln-type: os,library
+
+      - name: Write SARIF report
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: bc-forge-indexer:smoke
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+          vuln-type: os,library
+
+      - name: Fail on fixable critical vulnerabilities
+        run: |
+          python3 - << 'PY'
+          import datetime
+          import json
+          import re
+          import sys
+          from pathlib import Path
+
+          raw = Path(".github/vulnerability-exceptions.yml").read_text(encoding="utf-8")
+          lines = [line for line in raw.splitlines() if not line.strip().startswith("#")]
+          blocks = re.split(r"\n(?=  - )", "\n" + "\n".join(lines))
+          exceptions = {}
+          for block in blocks:
+              cve_match = re.search(r"(?m)^\s*- cve:\s*(\S+)\s*$", block)
+              if not cve_match:
+                  continue
+              cve = cve_match.group(1)
+              advisory_match = re.search(r"(?m)^\s*advisory:\s*(\S+)\s*$", block)
+              expires_match = re.search(r"(?m)^\s*expires:\s*(\d{4}-\d{2}-\d{2})\s*$", block)
+              if not advisory_match or not expires_match:
+                  print(f"::error::Exception {cve} must include an advisory id and an expiry date (YYYY-MM-DD).")
+                  sys.exit(1)
+              exceptions[cve] = (advisory_match.group(1), expires_match.group(1))
+
+          report = json.loads(Path("trivy-results.json").read_text(encoding="utf-8"))
+          today = datetime.date.today()
+          blocked = []
+          for result in report.get("Results") or []:
+              for vuln in result.get("Vulnerabilities") or []:
+                  if vuln.get("Severity") != "CRITICAL":
+                      continue
+                  fixed = (vuln.get("FixedVersion") or "").strip()
+                  if not fixed:
+                      continue
+                  vid = vuln.get("VulnerabilityID") or ""
+                  exception = exceptions.get(vid)
+                  if exception is None:
+                      blocked.append(f"{vid} in {vuln.get('PkgName')} is fixable in {fixed} and has no exception")
+                      continue
+                  advisory, expires = exception
+                  if datetime.date.fromisoformat(expires) < today:
+                      blocked.append(f"{vid} exception {advisory} expired on {expires}")
+          if blocked:
+              for item in blocked:
+                  print(f"::error::{item}")
+              sys.exit(1)
+          print(f"No blocking fixable critical vulnerabilities ({len(exceptions)} exception rule(s)).")
+          PY
+
+      - name: Upload scan report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-indexer-report
+          path: |
+            trivy-results.json
+            trivy-results.sarif
+          retention-days: 90
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-indexer
+
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -199,4 +295,5 @@ jobs:
             echo "- Version: \`${{ steps.meta.outputs.version }}\`"
             echo "- Prerelease: \`${{ steps.meta.outputs.is_prerelease }}\`"
             echo "- Tags: \`${{ steps.meta.outputs.tags }}\`"
+            echo "- Vulnerability scan: fixable critical findings block this publish unless an unexpired advisory exception exists."
           } >> "$GITHUB_STEP_SUMMARY"
