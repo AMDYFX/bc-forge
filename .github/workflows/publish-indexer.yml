@@ -1,30 +1,35 @@
-name: Publish Indexer
+name: Publish indexer image
 
+# Builds indexer/Dockerfile and publishes the image to GHCR when an indexer
+# release tag lands. The same final image is smoke-tested against fresh
+# Postgres before any registry write. Component tags (sdk-v*, cli-v*, react-v*)
+# do not match this filter, so they never push an image.
+#
+# Tag convention: indexer-v<semver>, e.g. indexer-v1.2.3 or indexer-v1.2.3-rc.1
 on:
   push:
-    branches: [main]
-    paths:
-      - 'indexer/**'
-      - '.github/workflows/publish-indexer.yml'
+    tags:
+      - 'indexer-v*'
   pull_request:
-    branches: [main]
     paths:
       - 'indexer/**'
       - '.github/workflows/publish-indexer.yml'
-  workflow_dispatch:
+      - 'package-lock.json'
+      - 'sdk/**'
 
-permissions: {}
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: bcpathway/bc-forge-indexer
+  TAG_PREFIX: indexer-v
 
 jobs:
-  smoke-test-and-publish:
+  publish:
     name: Smoke Test & Publish Indexer
     runs-on: ubuntu-latest
-    environment: container
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-
     services:
       postgres:
         image: postgres:16-alpine
@@ -39,7 +44,6 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -48,7 +52,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
+          cache: npm
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
@@ -60,8 +64,60 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/indexer?schema=public
         run: npx prisma migrate deploy
 
-      - name: Build final indexer Docker image
-        run: docker build -f indexer/Dockerfile -t bc-forge-indexer:smoke .
+      - name: Resolve image tags
+        id: meta
+        if: github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+
+          git_tag="${GITHUB_REF_NAME}"
+          if [[ "$git_tag" != "${TAG_PREFIX}"* ]]; then
+            echo "::error::Unexpected tag ${git_tag}; expected ${TAG_PREFIX}<semver>."
+            exit 1
+          fi
+
+          version="${git_tag#${TAG_PREFIX}}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag ${git_tag} does not carry a semantic version."
+            exit 1
+          fi
+
+          if [[ "$version" == *-* ]]; then
+            is_prerelease=true
+          else
+            is_prerelease=false
+          fi
+
+          tags="${REGISTRY}/${IMAGE_NAME}:${version}"
+          tags="${tags},${REGISTRY}/${IMAGE_NAME}:sha-${GITHUB_SHA}"
+          if [[ "$is_prerelease" == "false" ]]; then
+            tags="${tags},${REGISTRY}/${IMAGE_NAME}:latest"
+          fi
+
+          {
+            echo "version=${version}"
+            echo "is_prerelease=${is_prerelease}"
+            echo "tags=${tags}"
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build final indexer image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./indexer/Dockerfile
+          push: false
+          load: true
+          tags: bc-forge-indexer:smoke
+          build-args: |
+            BUILD_NAME=bc-forge-indexer
+            BUILD_VERSION=${{ steps.meta.outputs.version || 'smoke' }}
+            BUILD_REVISION=${{ github.sha }}
+            BUILD_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date || 'unknown' }}
 
       - name: Run final indexer container against fresh Postgres
         run: |
@@ -92,7 +148,6 @@ jobs:
 
       - name: Make authenticated /api/v1/stats request
         run: |
-          echo "Requesting authenticated /api/v1/stats..."
           response=$(curl -s -f -H "Authorization: Bearer smoke-test-token" http://127.0.0.1:3000/api/v1/stats)
           echo "Response: $response"
           if ! echo "$response" | grep -q '"mintCount"'; then
@@ -100,18 +155,48 @@ jobs:
             docker logs indexer-smoke-target
             exit 1
           fi
-          echo "Authenticated /api/v1/stats probe succeeded!"
 
       - name: Stop smoke test container
         if: always()
         run: docker rm -f indexer-smoke-target || true
 
-      - name: Push indexer container image
-        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch')
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push indexer image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./indexer/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+          build-args: |
+            BUILD_NAME=bc-forge-indexer
+            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            BUILD_REVISION=${{ github.sha }}
+            BUILD_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            BUILD_DATE=${{ steps.meta.outputs.build_date }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summarize published tags
+        if: github.event_name != 'pull_request'
         run: |
-          set -euo pipefail
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/bc-forge-indexer:sha-${GITHUB_SHA}"
-          docker tag bc-forge-indexer:smoke "${image}"
-          docker push "${image}"
-          echo "Pushed ${image} after the smoke probes succeeded."
+          {
+            echo "### Indexer image published"
+            echo ""
+            echo "- Image: \`${REGISTRY}/${IMAGE_NAME}\`"
+            echo "- Version: \`${{ steps.meta.outputs.version }}\`"
+            echo "- Prerelease: \`${{ steps.meta.outputs.is_prerelease }}\`"
+            echo "- Tags: \`${{ steps.meta.outputs.tags }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

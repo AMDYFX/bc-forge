@@ -1,5 +1,26 @@
 FROM node:20-alpine
 
+# Build metadata (issue #1047). The publishing workflow passes these at
+# `docker build` time; a local build falls back to the "unknown" placeholders
+# that `GET /version` reports.
+ARG BUILD_VERSION=unknown
+ARG BUILD_REVISION=unknown
+ARG BUILD_SOURCE=https://github.com/BCPathway/bc-forge
+ARG BUILD_DATE=unknown
+ARG BUILD_NAME=bc-forge-indexer
+
+# OCI image annotations. Declared before the dependency layers so changing
+# build metadata does not invalidate the cached npm/prisma layers.
+LABEL org.opencontainers.image.title="bc-forge-indexer" \
+      org.opencontainers.image.description="Server indexer microservice for bc-forge" \
+      org.opencontainers.image.source="${BUILD_SOURCE}" \
+      org.opencontainers.image.revision="${BUILD_REVISION}" \
+      org.opencontainers.image.version="${BUILD_VERSION}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.vendor="BCPathway" \
+      org.opencontainers.image.source-name="${BUILD_SOURCE}"
+
 # openssl is required by the Prisma query engine on Alpine.
 RUN apk add --no-cache openssl
 
@@ -29,4 +50,13 @@ RUN npm run build
 
 EXPOSE 3000
 ENV PORT=3000
+
+# Build metadata surfaced at runtime by the unauthenticated GET /version
+# endpoint, so an operator can identify the commit a container is running.
+ENV BUILD_NAME=${BUILD_NAME} \
+    BUILD_VERSION=${BUILD_VERSION} \
+    BUILD_REVISION=${BUILD_REVISION} \
+    BUILD_SOURCE=${BUILD_SOURCE} \
+    BUILD_DATE=${BUILD_DATE}
+
 CMD ["npm", "start"]
