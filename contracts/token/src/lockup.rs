@@ -7,9 +7,9 @@
 //! the error-adjacent states the helpers must handle: a user with no lock at
 //! all, and a lock whose unlock timestamp has already passed (expired).
 
-use crate::{BcForgeToken, BcForgeTokenClient, DataKey, LockupState};
-use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{Address, Env, String};
+use crate::{BcForgeToken, BcForgeTokenClient, DataKey, LockupState, TokenError};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
+use soroban_sdk::{symbol_short, Address, Env, IntoVal, String, TryFromVal};
 
 fn setup(env: &Env) -> (BcForgeTokenClient<'_>, Address) {
     env.mock_all_auths();
@@ -25,6 +25,110 @@ fn setup(env: &Env) -> (BcForgeTokenClient<'_>, Address) {
     );
 
     (client, admin)
+}
+
+fn mint(env: &Env, client: &BcForgeTokenClient<'_>, admin: &Address, user: &Address, amount: i128) {
+    env.as_contract(&client.address, || {
+        bc_forge_admin::grant_role(env, admin, bc_forge_admin::Role::Minter, admin).unwrap();
+    });
+    client.mint(admin, user, &amount);
+}
+
+#[test]
+fn admin_locks_balance_and_emits_event_without_changing_accounting() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 1_000);
+    let supply = client.total_supply();
+
+    client.lock_tokens(&admin, &user, &400, &200);
+
+    assert_eq!(client.balance(&user), 1_000);
+    assert_eq!(client.total_supply(), supply);
+    env.as_contract(&client.address, || {
+        assert_eq!(
+            BcForgeToken::read_lockup(&env, &user),
+            Some(LockupState {
+                amount: 400,
+                unlock_timestamp: 200
+            })
+        );
+    });
+    let events = env.events().all();
+    let (_, topics, data) = events.last().unwrap();
+    assert_eq!(
+        topics.get(0).unwrap(),
+        symbol_short!("locked").into_val(&env)
+    );
+    assert_eq!(
+        <(Address, i128, u64)>::try_from_val(&env, &data).unwrap(),
+        (user, 400, 200)
+    );
+}
+
+#[test]
+fn locks_accumulate_and_keep_latest_timestamp() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 1_000);
+    client.lock_tokens(&admin, &user, &300, &500);
+    client.lock_tokens(&admin, &user, &200, &100);
+    env.as_contract(&client.address, || {
+        assert_eq!(
+            BcForgeToken::read_lockup(&env, &user),
+            Some(LockupState {
+                amount: 500,
+                unlock_timestamp: 500
+            })
+        )
+    });
+}
+
+#[test]
+fn lock_rejects_invalid_or_unavailable_amounts() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 100);
+    assert_eq!(
+        client.try_lock_tokens(&admin, &user, &0, &0),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    assert_eq!(
+        client.try_lock_tokens(&admin, &user, &-1, &0),
+        Err(Ok(TokenError::InvalidAmount))
+    );
+    client.lock_tokens(&admin, &user, &80, &0);
+    assert_eq!(
+        client.try_lock_tokens(&admin, &user, &21, &0),
+        Err(Ok(TokenError::InsufficientBalance))
+    );
+}
+
+#[test]
+fn non_admin_cannot_lock_tokens() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let stranger = Address::generate(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 100);
+    assert!(client.try_lock_tokens(&stranger, &user, &10, &0).is_err());
+}
+
+#[test]
+fn lock_requires_initialized_contract() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let id = env.register(BcForgeToken, ());
+    let client = BcForgeTokenClient::new(&env, &id);
+    let caller = Address::generate(&env);
+    let user = Address::generate(&env);
+    assert_eq!(
+        client.try_lock_tokens(&caller, &user, &1, &0),
+        Err(Ok(TokenError::NotInitialized))
+    );
 }
 
 /// Saving a valid lockup state persists it under `DataKey::Lockup(user)` in

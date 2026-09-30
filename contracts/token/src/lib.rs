@@ -474,6 +474,48 @@ impl BcForgeToken {
 
 #[contractimpl]
 impl BcForgeToken {
+    /// Restricts part of an existing holder balance until `unlock_timestamp`.
+    /// Existing locks accumulate and can only have their unlock time extended.
+    pub fn lock_tokens(
+        env: Env,
+        caller: Address,
+        user: Address,
+        amount: i128,
+        unlock_timestamp: u64,
+    ) -> Result<(), TokenError> {
+        Self::extend_instance_ttl_for_call(&env);
+        Self::ensure_initialized(&env)?;
+        admin::require_admin(&env, &caller);
+        if amount <= 0 {
+            return Err(TokenError::InvalidAmount);
+        }
+
+        let existing = Self::read_lockup(&env, &user);
+        let locked = existing.as_ref().map(|state| state.amount).unwrap_or(0);
+        let spendable = Self::read_balance(&env, &user)
+            .checked_sub(locked)
+            .ok_or(TokenError::InsufficientBalance)?;
+        if amount > spendable {
+            return Err(TokenError::InsufficientBalance);
+        }
+        let accumulated = locked
+            .checked_add(amount)
+            .ok_or(TokenError::InvalidAmount)?;
+        let stored_unlock = existing
+            .map(|state| state.unlock_timestamp.max(unlock_timestamp))
+            .unwrap_or(unlock_timestamp);
+        Self::write_lockup(
+            &env,
+            &user,
+            &LockupState {
+                amount: accumulated,
+                unlock_timestamp: stored_unlock,
+            },
+        );
+        events::emit_locked(&env, &user, amount, stored_unlock);
+        Ok(())
+    }
+
     /// Initializes the token contract.
     ///
     /// Sets the admin address, decimals, name, and symbol.

@@ -395,3 +395,11 @@ pub fn emit_rescued(env: &Env, caller: &Address, token: &Address, to: &Address, 
         (caller.clone(), token.clone(), to.clone(), amount),
     );
 }
+
+/// Emits a lock creation/update event.
+pub fn emit_locked(env: &Env, user: &Address, amount: i128, unlock_timestamp: u64) {
+    env.events().publish(
+        (symbol_short!("locked"),),
+        (user.clone(), amount, unlock_timestamp),
+    );
+}
