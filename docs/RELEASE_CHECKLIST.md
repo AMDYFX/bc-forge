@@ -42,49 +42,35 @@ Use a granular npm token only when trusted publishing is unavailable (for exampl
 
 Do not leave `NODE_AUTH_TOKEN` in the workflow after the fallback publish. A provenance publish that always sends a long-lived token is not trusted publishing.
 
+## Verify a release
 
-# Release Checklist & Preflight Guide
+[`.github/workflows/publish-release-manifest.yml`](../.github/workflows/publish-release-manifest.yml) runs when a GitHub Release is published. It builds `@bc-forge/sdk`, `@bc-forge/cli`, and `@bc-forge/react`, packs each tarball, builds `bc_forge_token.wasm`, and builds the indexer image. It attaches `checksums.txt`, `manifest.json`, the three tarballs, and the token WASM to that release. `manifest.json` lists every one of those files with its component, version, filename, and SHA-256 checksum, plus the indexer image name and `containerimage.digest`.
 
-This document serves as the master release checklist for `BCPathway/bc-forge`. Every production release across SDK, CLI, React, indexer, WASM, and documentation must satisfy the preflight, artifact generation, verification, and rollback criteria outlined below.
+Download `checksums.txt` and the artifacts into the same directory, then recompute the checksums.
 
----
+Linux:
 
-## 1. Preflight & Versioning
-- [ ] **Branch Verification**: Ensure you are releasing from a clean `main` or release branch (`release/vX.Y.Z`).
-- [ ] **Version Bump**: Update version numbers across package manifests (`package.json`, Cargo manifests, etc.) following semantic versioning (SemVer).
-- [ ] **Changelog**: Compile all updates into `CHANGELOG.md`, highlighting breaking changes and migration requirements.
-- [ ] **Upgrade Guidance**: Review and link to [docs/UPGRADE_GUIDE.md](./UPGRADE_GUIDE.md) for breaking or stateful migrations.
+```bash
+sha256sum -c checksums.txt
+```
 
----
+macOS:
 
-## 2. Deliverable-Specific Verification & Artifact Checks
+```bash
+shasum -a 256 -c checksums.txt
+```
 
-### A. SDK & React Packages (`npm`)
-- [ ] **Testing**: Run clean test suites (`npm test`) across core SDK and React package directories.
-- [ ] **Build**: Execute production builds (`npm run build`) ensuring all TypeScript declarations and exports resolve correctly.
-- [ ] **Dry Run**: Run `npm publish --dry-run` to inspect tarball contents and included files.
-- [ ] **Rollback**: If a malformed package is published, deprecate immediately via `npm deprecate <pkg>@<version> "Critical regression"` and publish a patched hotfix version.
+Windows PowerShell:
 
-### B. CLI Binaries & Container Images
-- [ ] **Cross-Platform Compilation**: Verify multi-architecture build pipelines (Linux, macOS, Windows) succeed.
-- [ ] **Container Security Scan**: Run vulnerability scanners on container images prior to tag pushing.
-- [ ] **Rollback**: Retag the previous stable container digest in your deployment orchestrator if runtime initialization fails.
+```powershell
+Get-Content checksums.txt | ForEach-Object {
+  $hash, $name = $_ -split '\s+', 2
+  $actual = (Get-FileHash -Algorithm SHA256 -Path $name).Hash.ToLower()
+  if ($actual -ne $hash) { throw "$name checksum mismatch" }
+  Write-Output "$name OK"
+}
+```
 
-### C. Smart Contract WASM Binaries
-- [ ] **Deterministic Compilation**: Ensure WASM deliverables are compiled with reproducible build flags.
-- [ ] **Verification**: Confirm contract bytecode matches expected interface digests.
-- [ ] **Rollback**: Prepare state-compatible fallback migration scripts if contract deployment fails validation.
+A matching command prints `OK` for each file. A mismatch prints a checksum error and a non-zero exit status.
 
-### D. Indexer & Services
-- [ ] **Migration Check**: Verify database migrations are backward-compatible.
-- [ ] **Rollback**: Maintain schema rollback down-scripts for every applied database migration.
-
----
-
-## 3. Post-Publish Verification
-- [ ] **Registry Check**: Verify packages are downloadable via `npm install <package>@<version>`.
-- [ ] **Smoke Test**: Run an end-to-end smoke test against published artifacts.
-- [ ] **Tag & Release**: Publish GitHub Release tagging the commit and attaching release notes.
-
----
-*Refer to [docs/UPGRADE_GUIDE.md](./UPGRADE_GUIDE.md) for detailed stateful migration instructions.*
+The indexer entry in `manifest.json` uses `digest` (`sha256:...`) rather than a filename. Compare that value to `containerimage.digest` in the "Build indexer image and record its digest" log of the release workflow. That digest is the image built for the release; it is not a GHCR pull digest, because this repository does not push the indexer image.
