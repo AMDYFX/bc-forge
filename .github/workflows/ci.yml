@@ -313,19 +313,18 @@ jobs:
         run: npm run build
 
   # ─── React peer-version matrix (#1041) ─────────────────────────────────
-  # Validates that the packed @bc-forge/react tarball can be installed and
-  # imported against both supported peer versions (React 18 and React 19).
-  # The job packs the tarball, installs it into a throwaway consumer
-  # directory, and runs a Node require-smoke to prove the module resolves.
-  # The repository lockfile is never mutated: all installs use --no-package-lock.
+  # Packs @bc-forge/react (and the SDK it depends on) and installs those
+  # tarballs into a throwaway consumer. The minimum supported React 18 and a
+  # supported React 19 each run the consumer smoke test. React 17 must be
+  # rejected by npm's peer check. Installs use --no-package-lock in a temp
+  # directory, and the job fails if the repository lockfile changes.
   react-peer-versions:
     name: React peer compat (React ${{ matrix.react-version }})
     runs-on: ubuntu-latest
-    needs: react
     strategy:
       fail-fast: false
       matrix:
-        react-version: ['18', '19']
+        react-version: ['18.0.0', '19.0.0']
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -334,83 +333,31 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: npm
+          cache-dependency-path: package-lock.json
 
-      - name: Install react package dependencies (frozen)
+      - name: Install dependencies
         run: npm ci
-        working-directory: react
 
-      - name: Build SDK dependency
-        run: npm run build --workspace @bc-forge/sdk
-
-      - name: Build react package
-        run: npm run build
-        working-directory: react
-
-      - name: Pack react tarball
-        id: pack
+      - name: Build SDK and React
         run: |
-          TARBALL=$(npm pack --json 2>/dev/null | node -e "process.stdin.resume();let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>console.log(JSON.parse(d)[0].filename))")
-          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
-          echo "Packed: $TARBALL"
-        working-directory: react
+          npm run build --workspace @bc-forge/sdk
+          npm run build --workspace @bc-forge/react
 
-      - name: Create throwaway consumer directory
-        run: mkdir -p /tmp/react-consumer
-
-      - name: Install packed tarball + React ${{ matrix.react-version }} in consumer
+      - name: Pack tarballs
         run: |
-          TARBALL="${{ steps.pack.outputs.tarball }}"
-          npm install --no-package-lock --legacy-peer-deps \
-            "react@${{ matrix.react-version }}" \
-            "react-dom@${{ matrix.react-version }}" \
-            "${{ github.workspace }}/react/${TARBALL}"
-        working-directory: /tmp/react-consumer
+          mkdir -p "$RUNNER_TEMP/react-peer-packs"
+          npm pack --workspace @bc-forge/sdk --pack-destination "$RUNNER_TEMP/react-peer-packs"
+          npm pack --workspace @bc-forge/react --pack-destination "$RUNNER_TEMP/react-peer-packs"
 
-      - name: Smoke-test import resolves against React ${{ matrix.react-version }}
-        run: |
-          node - <<'EOF'
-          // Verify the packed module resolves and its peer (react) satisfies the range.
-          const pkg  = require('@bc-forge/react');
-          const react = require('react');
-          const semver = require('/tmp/react-consumer/node_modules/semver') || null;
+      - name: Consumer smoke test on React ${{ matrix.react-version }}
+        run: node scripts/test-react-peers.mjs --react "${{ matrix.react-version }}" --packs "$RUNNER_TEMP/react-peer-packs"
 
-          const reactVersion = react.version;
-          console.log(`@bc-forge/react loaded OK`);
-          console.log(`React version in consumer: ${reactVersion}`);
+      - name: Incompatible React 17 peer fails the install
+        run: node scripts/test-react-peers.mjs --react 17.0.2 --packs "$RUNNER_TEMP/react-peer-packs" --expect-incompatible
 
-          // Peer range declared in the package
-          const peerRange = '^18.0.0 || ^19.0.0';
-          const major = parseInt(reactVersion.split('.')[0], 10);
-          if (major !== 18 && major !== 19) {
-            console.error(`ERROR: unexpected React major ${major}`);
-            process.exit(1);
-          }
-          console.log(`Peer range "${peerRange}" satisfied by React ${reactVersion} ✓`);
-          EOF
-        working-directory: /tmp/react-consumer
-
-      - name: Verify incompatible peer is rejected
-        # Install React 17 (outside the declared peer range) and confirm the
-        # module loader / peer-dep check surfaces the mismatch.  We install
-        # with --legacy-peer-deps so npm does NOT auto-abort, then assert at
-        # runtime that the react version is NOT in the supported range.
-        run: |
-          mkdir -p /tmp/react-bad-peer
-          npm install --no-package-lock --legacy-peer-deps \
-            "react@17" "react-dom@17" \
-            "${{ github.workspace }}/react/${{ steps.pack.outputs.tarball }}" \
-            --prefix /tmp/react-bad-peer
-
-          node - <<'EOF'
-          const react = require('react');
-          const major = parseInt(react.version.split('.')[0], 10);
-          if (major === 18 || major === 19) {
-            console.error('Expected React 17 in bad-peer environment, got ' + react.version);
-            process.exit(1);
-          }
-          console.log('Confirmed: bad-peer env has React ' + react.version + ' (outside supported range) ✓');
-          EOF
-        working-directory: /tmp/react-bad-peer
+      - name: Confirm the repository lockfile was not modified
+        run: git diff --exit-code -- package-lock.json react/package-lock.json
 
   # ─── Dependency audit (#770) ────────────────────────────────────────────
   # Verifies the workspace dependency graph resolves cleanly: cargo metadata
