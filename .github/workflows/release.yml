@@ -87,6 +87,7 @@ jobs:
             npm run build --workspace @bc-forge/sdk
             npm run build --workspace @bc-forge/cli
             npm run build --workspace @bc-forge/react
+            npm run prisma:generate --workspace @bc-forge/indexer
             npm run build --workspace @bc-forge/indexer
             node scripts/validate-react-tarball.mjs
             npm config set provenance true
