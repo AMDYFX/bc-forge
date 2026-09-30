@@ -6,6 +6,7 @@ import { execSync } from 'node:child_process';
 import {
   validateVersionTag,
   validateBeforeChangesetPublish,
+  classifyRegistryRelease,
   KNOWN_PACKAGES,
 } from '../../../scripts/check-version-tag.mjs';
 
@@ -117,20 +118,97 @@ describe('scripts/check-version-tag.mjs', () => {
       }).toThrow(/Malformed tag format/);
     });
 
-    it('skips already published packages and validates unpublished ones before Changesets publish', () => {
+    it('validates unpublished packages and treats a matching republish as a no-op', () => {
       const unpublished = validateBeforeChangesetPublish({
         rootDir,
-        checkRegistry: mockUnpublishedRegistry,
+        inspectRegistry: () => ({ published: false, remoteVersion: null, hasArtifact: false }),
       });
       expect(unpublished.map((result) => result.component).sort()).toEqual(
         Object.keys(KNOWN_PACKAGES).sort(),
       );
+      expect(unpublished.every((result) => !result.noop)).toBe(true);
 
-      const none = validateBeforeChangesetPublish({
+      const rerun = validateBeforeChangesetPublish({
         rootDir,
-        checkRegistry: mockPublishedRegistry,
+        inspectRegistry: ({ version }) => ({
+          published: true,
+          remoteVersion: version,
+          hasArtifact: true,
+        }),
       });
-      expect(none).toEqual([]);
+      expect(rerun.map((result) => result.component).sort()).toEqual(
+        Object.keys(KNOWN_PACKAGES).sort(),
+      );
+      expect(rerun.every((result) => result.noop)).toBe(true);
+    });
+
+    it('fails before Changesets publish when an existing artifact does not match', () => {
+      expect(() => {
+        validateBeforeChangesetPublish({
+          rootDir,
+          inspectRegistry: () => ({
+            published: true,
+            remoteVersion: '9.9.9',
+            hasArtifact: true,
+          }),
+        });
+      }).toThrow(/does not match the existing npm artifact/);
+
+      expect(() => {
+        validateBeforeChangesetPublish({
+          rootDir,
+          inspectRegistry: ({ version }) => ({
+            published: true,
+            remoteVersion: version,
+            hasArtifact: true,
+            artifactMatches: false,
+          }),
+        });
+      }).toThrow(/does not match the existing npm artifact/);
+    });
+
+    it('classifies a matching published version as a no-op and a mismatch as failure', () => {
+      expect(
+        classifyRegistryRelease({
+          published: false,
+          remoteVersion: null,
+          intendedVersion: '1.2.3',
+          hasArtifact: false,
+        }),
+      ).toBe('publish');
+      expect(
+        classifyRegistryRelease({
+          published: true,
+          remoteVersion: '1.2.3',
+          intendedVersion: '1.2.3',
+          hasArtifact: true,
+        }),
+      ).toBe('noop');
+      expect(
+        classifyRegistryRelease({
+          published: true,
+          remoteVersion: '1.2.2',
+          intendedVersion: '1.2.3',
+          hasArtifact: true,
+        }),
+      ).toBe('mismatch');
+      expect(
+        classifyRegistryRelease({
+          published: true,
+          remoteVersion: '1.2.3',
+          intendedVersion: '1.2.3',
+          hasArtifact: false,
+        }),
+      ).toBe('mismatch');
+      expect(
+        classifyRegistryRelease({
+          published: true,
+          remoteVersion: '1.2.3',
+          intendedVersion: '1.2.3',
+          hasArtifact: true,
+          artifactMatches: false,
+        }),
+      ).toBe('mismatch');
     });
 
     it('fails when version is already published (mocked registry check)', () => {

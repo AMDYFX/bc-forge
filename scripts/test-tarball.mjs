@@ -43,6 +43,14 @@ for (const [name, dir] of Object.entries(dirs)) {
   const packed = JSON.parse(run("npm pack --json --ignore-scripts", pkgDir));
   const entry = packed[0];
   const tarball = path.join(pkgDir, entry.filename);
+
+  let sdkTarball = null;
+  if (dir !== "sdk") {
+    const sdkPkgDir = path.join(root, "sdk");
+    const sdkPacked = JSON.parse(run("npm pack --json --ignore-scripts", sdkPkgDir));
+    sdkTarball = path.join(sdkPkgDir, sdkPacked[0].filename);
+  }
+
   const listed = run(`tar -tf "${entry.filename}"`, pkgDir)
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -74,15 +82,15 @@ for (const [name, dir] of Object.entries(dirs)) {
     console.error(`${name} tarball is outside the allowlist:`);
     for (const file of rejected) console.error(`  ${file}`);
     rmSync(tarball, { force: true });
+    if (sdkTarball) rmSync(sdkTarball, { force: true });
     process.exit(1);
   }
 
   const consumer = mkdtempSync(path.join(tmpdir(), "bc-forge-consumer-"));
   try {
     run("npm init -y", consumer);
-    run(`npm install "${tarball}"`, consumer);
-    // Probes are written to files rather than passed with `node -e`: the
-    // multi-line source does not survive shell quoting.
+    const toInstall = sdkTarball ? `"${sdkTarball}" "${tarball}"` : `"${tarball}"`;
+    run(`npm install ${toInstall}`, consumer);
     const esmProbe = path.join(consumer, "esm-probe.mjs");
     writeFileSync(
       esmProbe,
@@ -95,16 +103,20 @@ for (const [name, dir] of Object.entries(dirs)) {
     run("node esm-probe.mjs", consumer);
 
     if (isDualPackage) {
-      // A dual package must also resolve through the "require" condition.
       const cjsProbe = path.join(consumer, "cjs-probe.cjs");
       writeFileSync(cjsProbe, `require(${JSON.stringify(name)});\n`);
       run("node cjs-probe.cjs", consumer);
-      console.log(`${name} tarball allowlist, ESM import and CJS require passed.`);
-    } else {
-      console.log(`${name} tarball allowlist and consumer import passed.`);
     }
+    if (dir === "react") {
+      execSync("node react/test-consumer/run-smoke-test.mjs", {
+        cwd: root,
+        stdio: "inherit",
+      });
+    }
+    console.log(`${name} tarball allowlist and consumer import passed.`);
   } finally {
     rmSync(consumer, { recursive: true, force: true });
     rmSync(tarball, { force: true });
+    if (sdkTarball) rmSync(sdkTarball, { force: true });
   }
 }
