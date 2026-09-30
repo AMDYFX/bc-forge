@@ -154,7 +154,9 @@ fn burn_rejects_spending_any_locked_balance() {
 
     assert_eq!(
         client.try_burn(&user, &601),
-        Err(Ok(TokenError::InsufficientBalance))
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            TokenError::InsufficientBalance as u32
+        )))
     );
     assert_eq!(client.balance(&user), 1_000);
     assert_eq!(client.supply(), 1_000);
@@ -172,7 +174,9 @@ fn burn_from_enforces_lock_in_addition_to_allowance() {
 
     assert_eq!(
         client.try_burn_from(&spender, &owner, &601),
-        Err(Ok(TokenError::InsufficientBalance))
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            TokenError::InsufficientBalance as u32
+        )))
     );
     assert_eq!(client.allowance(&owner, &spender), 1_000);
     assert_eq!(client.balance(&owner), 1_000);
@@ -195,7 +199,9 @@ fn expired_but_unwithdrawn_lock_still_blocks_burn() {
     assert!(!env.as_contract(&client.address, || BcForgeToken::is_locked(&env, &user)));
     assert_eq!(
         client.try_burn(&user, &601),
-        Err(Ok(TokenError::InsufficientBalance))
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            TokenError::InsufficientBalance as u32
+        )))
     );
 }
 
