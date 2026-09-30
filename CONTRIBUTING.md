@@ -212,51 +212,24 @@ Rust line coverage is measured with [cargo-tarpaulin](https://github.com/xd00964
 
 ## 📦 Releases
 
-All npm publishing happens in one place: [`.github/workflows/release.yml`](.github/workflows/release.yml).
-It runs on every push to `main` and uses [Changesets](https://changesets.dev) plus
-npm Trusted Publishing with provenance. **Never add a second workflow that runs
-`npm publish`, and never introduce an `NPM_TOKEN` secret** — a second publisher
-races `changeset publish` for the same version number and defeats provenance.
+[`.github/workflows/release.yml`](.github/workflows/release.yml) still publishes
+the npm workspaces on every push to `main` through [Changesets](https://changesets.dev)
+and npm Trusted Publishing (`id-token: write`, `npm config set provenance true`).
+That job builds `@bc-forge/sdk`, `@bc-forge/cli`, and `@bc-forge/react` from the
+repository root before `npx changeset publish`. Do not remove those builds:
+React compiles against the SDK, and `dist/` is gitignored.
 
-### Requesting a release
+[`.github/workflows/publish-react.yml`](.github/workflows/publish-react.yml)
+publishes `@bc-forge/react` only for tags that match `react-v*`. A `sdk-v*`,
+`cli-v*`, or other component tag does not trigger it, so those releases cannot
+publish React. The workflow runs from the repository root (`npm ci`, lint,
+test, SDK build, React build, tarball check, then `npm publish --access public`
+with provenance). Do not set `defaults.run.working-directory` to `react/`:
+`npm run build --workspace` only resolves against the root `package.json`.
 
-Add a changeset naming the package you changed:
-
-```bash
-npm run changeset
-```
-
-| Package | Changeset | Resulting release |
-| --- | --- | --- |
-| `@bc-forge/sdk` | `"@bc-forge/sdk": patch` | `sdk-v<semver>` |
-| `@bc-forge/cli` | `"@bc-forge/cli": patch` | `cli-v<semver>` |
-| `@bc-forge/react` | `"@bc-forge/react": patch` | `react-v<semver>` |
-
-A React component release is therefore requested exactly like any other: a
-changeset that names `@bc-forge/react`. Changesets applies the release, opens
-its version PR, and `release.yml` publishes `@bc-forge/react` **once** through
-the shared publisher. There is no separate React publish job and no
-`react-v*` tag trigger, so a React release cannot publish on its own schedule and
-an SDK or CLI release can never publish React.
-
-Because `@bc-forge/react` depends on `@bc-forge/sdk`, Changesets bumps React
-alongside an SDK release; that is expected and is the one case where a
-non-React changeset produces a `react-v<semver>` release.
-
-### What the release workflow does
-
-`release.yml` runs from the repository root and, before publishing:
-
-1. `npm ci`
-2. `npm run build --workspace @bc-forge/sdk`, then `--workspace @bc-forge/react`
-3. `npm run test --workspace @bc-forge/react`
-4. `npm pack` the React tarball and assert it contains `dist/index.js`,
-   `dist/index.mjs`, and `dist/index.d.ts`, and no unbuilt `src/`
-
-React ships build output only (`files: ["dist"]`) and `dist/` is gitignored, so
-the build step is required — without it the published package would contain
-nothing but `package.json`. These commands must stay at the repository root:
-`--workspace` only resolves against the root `package.json`.
+Request a Changesets release with `npm run changeset` and name `@bc-forge/react`
+when the React package should ship from `main`. Push a `react-v<version>` tag
+only for the tag publisher, and only when that version is not already on npm.
 
 ## 📐 Architecture Guidelines
 

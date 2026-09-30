@@ -41,6 +41,7 @@ jobs:
           commit: 'chore: release packages'
           title: 'chore: release packages'
           publish: |
+            npm run build --workspace @bc-forge/sdk
             npm run build --workspace @bc-forge/cli
             npm run build --workspace @bc-forge/react
             npm config set provenance true
