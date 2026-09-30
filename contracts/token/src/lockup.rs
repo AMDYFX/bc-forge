@@ -9,7 +9,7 @@
 
 use crate::{BcForgeToken, BcForgeTokenClient, DataKey, LockupState, TokenError};
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
-use soroban_sdk::{symbol_short, Address, Env, IntoVal, String, TryFromVal};
+use soroban_sdk::{symbol_short, Address, Env, String, Symbol, TryFromVal};
 
 fn setup(env: &Env) -> (BcForgeTokenClient<'_>, Address) {
     env.mock_all_auths();
@@ -29,7 +29,7 @@ fn setup(env: &Env) -> (BcForgeTokenClient<'_>, Address) {
 
 fn mint(env: &Env, client: &BcForgeTokenClient<'_>, admin: &Address, user: &Address, amount: i128) {
     env.as_contract(&client.address, || {
-        bc_forge_admin::grant_role(env, admin, bc_forge_admin::Role::Minter, admin).unwrap();
+        bc_forge_admin::grant_role(env, admin, bc_forge_admin::Role::Minter, admin);
     });
     client.mint(admin, user, &amount);
 }
@@ -40,12 +40,12 @@ fn admin_locks_balance_and_emits_event_without_changing_accounting() {
     let (client, admin) = setup(&env);
     let user = Address::generate(&env);
     mint(&env, &client, &admin, &user, 1_000);
-    let supply = client.total_supply();
+    let supply = client.supply();
 
     client.lock_tokens(&admin, &user, &400, &200);
 
     assert_eq!(client.balance(&user), 1_000);
-    assert_eq!(client.total_supply(), supply);
+    assert_eq!(client.supply(), supply);
     env.as_contract(&client.address, || {
         assert_eq!(
             BcForgeToken::read_lockup(&env, &user),
@@ -58,8 +58,8 @@ fn admin_locks_balance_and_emits_event_without_changing_accounting() {
     let events = env.events().all();
     let (_, topics, data) = events.last().unwrap();
     assert_eq!(
-        topics.get(0).unwrap(),
-        symbol_short!("locked").into_val(&env)
+        Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap(),
+        symbol_short!("locked")
     );
     assert_eq!(
         <(Address, i128, u64)>::try_from_val(&env, &data).unwrap(),
