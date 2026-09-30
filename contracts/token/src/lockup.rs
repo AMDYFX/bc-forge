@@ -7,9 +7,12 @@
 //! the error-adjacent states the helpers must handle: a user with no lock at
 //! all, and a lock whose unlock timestamp has already passed (expired).
 
-use crate::{BcForgeToken, BcForgeTokenClient, DataKey, LockupState, TokenError};
+use crate::{
+    events::EVENT_SCHEMA_VERSION, BcForgeToken, BcForgeTokenClient, DataKey, LockupState,
+    TokenError,
+};
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
-use soroban_sdk::{symbol_short, Address, Env, IntoVal, String, Symbol, TryFromVal};
+use soroban_sdk::{symbol_short, Address, Env, String, Symbol, TryIntoVal, Val};
 
 fn setup(env: &Env) -> (BcForgeTokenClient<'_>, Address) {
     env.mock_all_auths();
@@ -29,7 +32,7 @@ fn setup(env: &Env) -> (BcForgeTokenClient<'_>, Address) {
 
 fn mint(env: &Env, client: &BcForgeTokenClient<'_>, admin: &Address, user: &Address, amount: i128) {
     env.as_contract(&client.address, || {
-        bc_forge_admin::grant_role(env, admin, bc_forge_admin::Role::Minter, admin).unwrap();
+        bc_forge_admin::grant_role(env, admin, bc_forge_admin::Role::Minter, admin);
     });
     client.mint(admin, user, &amount);
 }
@@ -40,12 +43,28 @@ fn admin_locks_balance_and_emits_event_without_changing_accounting() {
     let (client, admin) = setup(&env);
     let user = Address::generate(&env);
     mint(&env, &client, &admin, &user, 1_000);
-    let supply = client.total_supply();
+    let supply = client.supply();
 
     client.lock_tokens(&admin, &user, &400, &200);
 
+    // `env.events().all()` only contains the latest invocation, so read the
+    // lock event before later balance and storage calls.
+    let events = env.events().all();
+    let (_, topics, data) = events.get(events.len() - 1).unwrap();
+    let topic: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("locked"));
+    let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
+    let event_user: Address = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
+    let event_amount: i128 = data_vec.get(1).unwrap().try_into_val(&env).unwrap();
+    let event_unlock: u64 = data_vec.get(2).unwrap().try_into_val(&env).unwrap();
+    let event_version: u32 = data_vec.get(3).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(event_user, user);
+    assert_eq!(event_amount, 400);
+    assert_eq!(event_unlock, 200);
+    assert_eq!(event_version, EVENT_SCHEMA_VERSION);
+
     assert_eq!(client.balance(&user), 1_000);
-    assert_eq!(client.total_supply(), supply);
+    assert_eq!(client.supply(), supply);
     env.as_contract(&client.address, || {
         assert_eq!(
             BcForgeToken::read_lockup(&env, &user),
@@ -55,16 +74,6 @@ fn admin_locks_balance_and_emits_event_without_changing_accounting() {
             })
         );
     });
-    let events = env.events().all();
-    let (_, topics, data) = events.last().unwrap();
-    assert_eq!(
-        topics.get(0).unwrap(),
-        symbol_short!("locked").into_val(&env)
-    );
-    assert_eq!(
-        <(Address, i128, u64)>::try_from_val(&env, &data).unwrap(),
-        (user, 400, 200)
-    );
 }
 
 #[test]
@@ -126,20 +135,24 @@ fn holder_withdraws_expired_lock_without_changing_accounting() {
     client.lock_tokens(&admin, &user, &40, &50);
     env.ledger().set_timestamp(50);
     client.withdraw_locked(&user);
+
+    let events = env.events().all();
+    let (_, topics, data) = events.get(events.len() - 1).unwrap();
+    let topic: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, Symbol::new(&env, "withdraw_locked"));
+    let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
+    let event_user: Address = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
+    let event_amount: i128 = data_vec.get(1).unwrap().try_into_val(&env).unwrap();
+    let event_version: u32 = data_vec.get(2).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(event_user, user);
+    assert_eq!(event_amount, 40);
+    assert_eq!(event_version, EVENT_SCHEMA_VERSION);
+
     assert_eq!(client.balance(&user), 100);
-    assert_eq!(client.total_supply(), 100);
+    assert_eq!(client.supply(), 100);
     env.as_contract(&client.address, || {
         assert_eq!(BcForgeToken::read_lockup(&env, &user), None)
     });
-    let (_, topics, data) = env.events().all().last().unwrap();
-    assert_eq!(
-        topics.get(0).unwrap(),
-        Symbol::new(&env, "withdraw_locked").into_val(&env)
-    );
-    assert_eq!(
-        <(Address, i128)>::try_from_val(&env, &data).unwrap(),
-        (user.clone(), 40)
-    );
     assert_eq!(
         client.try_withdraw_locked(&user),
         Err(Ok(TokenError::LockupNotFound))
@@ -212,6 +225,13 @@ fn ownership_transfer_changes_who_can_lock() {
     let new_admin = Address::generate(&env);
     let user = Address::generate(&env);
     mint(&env, &client, &old_admin, &user, 100);
+    client.propose_privilege_action(
+        &old_admin,
+        &bc_forge_admin::PrivilegeAction::TransferOwnership(new_admin.clone()),
+    );
+    let mut info = env.ledger().get();
+    info.timestamp += 24 * 60 * 60;
+    env.ledger().set(info);
     client.transfer_ownership(&new_admin);
     client.lock_tokens(&new_admin, &user, &10, &0);
     assert!(client.try_lock_tokens(&old_admin, &user, &1, &0).is_err());
@@ -232,7 +252,7 @@ fn full_lockup_cycle_preserves_supply_invariant() {
     client.transfer(&holder, &recipient, &400);
     assert_eq!(client.balance(&holder), 0);
     assert_eq!(
-        client.total_supply(),
+        client.supply(),
         client.balance(&holder) + client.balance(&recipient)
     );
 }
