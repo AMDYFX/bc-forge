@@ -74,3 +74,18 @@ Get-Content checksums.txt | ForEach-Object {
 A matching command prints `OK` for each file. A mismatch prints a checksum error and a non-zero exit status.
 
 The indexer entry in `manifest.json` uses `digest` (`sha256:...`) rather than a filename. Compare that value to `containerimage.digest` in the "Build indexer image and record its digest" log of the release workflow. That digest is the image built for the release; it is not a GHCR pull digest, because this repository does not push the indexer image.
+
+## Rerun behavior
+
+`.github/workflows/release.yml` publishes npm packages on push to `main`. It does not push images to GHCR, so there is no container digest to compare. `publish-sdk.yml` and `publish-cli.yml` are not on `main`; SDK, CLI, and React publish through this Changesets workflow.
+
+Concurrency is per component (`publish-sdk`, `publish-cli`, `publish-react`) plus `publish-changesets` for the release job. `cancel-in-progress` is false on each group. A second push waits. It cannot cancel a publish that has already started.
+
+Before `changeset publish`, `scripts/check-published-artifacts.mjs` packs each package and queries npm:
+
+- The version is not on npm: publish continues.
+- The version is on npm and the normalized tarball digest matches: the job continues and Changesets skips that version. A rerun of the same artifact is a no-op.
+- The version is on npm, the digest differs, and the published `gitHead` is this commit: the job fails. Do not force-publish over the conflicting artifact.
+- The version is on npm, the digest differs, and `gitHead` is a different commit: the existing version stays. This commit does not republish it.
+
+Re-run the failed Release workflow from the Actions tab after fixing the commit. A successful rerun of a commit whose artifacts are already on npm with the same digest does not publish a second copy.

@@ -10,10 +10,63 @@ permissions:
   id-token: write
   pull-requests: write
 
+# Per-component groups live on component-guard. cancel-in-progress is false
+# there and on the Changesets job, so a later push waits and cannot cancel a
+# publish that has already started. Rerun behavior is documented in
+# docs/RELEASE_CHECKLIST.md (#1036).
+
 jobs:
+  component-guard:
+    name: Publish guard (${{ matrix.component }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [sdk, cli, react]
+    concurrency:
+      group: publish-${{ matrix.component }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build ${{ matrix.component }}
+        run: |
+          case "${{ matrix.component }}" in
+            sdk)
+              npm run build --workspace @bc-forge/sdk
+              ;;
+            cli)
+              npm run build --workspace @bc-forge/sdk
+              npm run build --workspace @bc-forge/cli
+              ;;
+            react)
+              npm run build --workspace @bc-forge/sdk
+              npm run build --workspace @bc-forge/react
+              ;;
+          esac
+
+      - name: Compare the packed artifact with npm
+        run: node scripts/check-published-artifacts.mjs --component "${{ matrix.component }}"
+
   release:
     name: Release packages
+    needs: component-guard
     runs-on: ubuntu-latest
+    concurrency:
+      group: publish-changesets
+      cancel-in-progress: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,8 +77,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
+          registry-url: https://registry.npmjs.org
+          cache: npm
           cache-dependency-path: package-lock.json
 
       - name: Install dependencies
@@ -44,6 +97,7 @@ jobs:
             npm run build --workspace @bc-forge/sdk
             npm run build --workspace @bc-forge/cli
             npm run build --workspace @bc-forge/react
+            node scripts/check-published-artifacts.mjs
             npm config set provenance true
             npx changeset publish
         env:
