@@ -223,6 +223,33 @@ describe('Deployments registry (#937)', () => {
       );
     });
 
+    it('appends the testnet explorer link when registering an alias', async () => {
+      const messages: string[] = [];
+      const spy = vi.spyOn(logger, 'success').mockImplementation((message: string) => {
+        messages.push(message);
+      });
+      try {
+        process.exitCode = 0;
+        await createDeploymentsCommand().parseAsync([
+          'node',
+          'deployments',
+          'register',
+          'token',
+          TESTNET_ID,
+          '--network',
+          'testnet',
+          '--file',
+          registryPath,
+        ]);
+        expect(process.exitCode).not.toBe(1);
+        expect(messages.join('\n')).toContain(
+          `https://stellar.expert/explorer/testnet/contract/${TESTNET_ID}`,
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('prints JSON without an explorer URL when --json is supplied', async () => {
       registerDeploymentAlias({
         alias: 'token',

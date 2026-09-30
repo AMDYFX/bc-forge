@@ -42,7 +42,7 @@ export function createDeploymentsCommand(): Command {
         filePath: opts.file,
       });
       logger.success(
-        `Registered alias "${result.alias}" on ${result.network} → ${result.contractId}`
+        `Registered alias "${result.alias}" on ${result.network} → ${formatContractIdWithExplorer(result.contractId, result.network)}`,
       );
       logger.info(`Saved ${result.filePath}`);
     } catch (err: unknown) {
