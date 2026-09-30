@@ -127,6 +127,24 @@ fn non_admin_cannot_lock_tokens() {
 }
 
 #[test]
+fn burn_allows_exactly_the_free_balance_and_preserves_lock() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 1_000);
+    client.lock_tokens(&admin, &user, &400, &200);
+    let supply = client.supply();
+
+    client.burn(&user, &600);
+
+    assert_eq!(client.balance(&user), 400);
+    assert_eq!(client.supply(), supply - 600);
+    env.as_contract(&client.address, || {
+        assert_eq!(BcForgeToken::get_locked_amount(&env, &user), 400);
+    });
+}
+
+#[test]
 fn holder_withdraws_expired_lock_without_changing_accounting() {
     let env = Env::default();
     let (client, admin) = setup(&env);
@@ -174,6 +192,67 @@ fn early_withdraw_fails_and_preserves_lock() {
     env.as_contract(&client.address, || {
         assert_eq!(BcForgeToken::get_locked_amount(&env, &user), 40)
     });
+}
+
+#[test]
+fn burn_rejects_spending_any_locked_balance() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 1_000);
+    client.lock_tokens(&admin, &user, &400, &200);
+
+    assert_eq!(
+        client.try_burn(&user, &601),
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            TokenError::InsufficientBalance as u32
+        )))
+    );
+    assert_eq!(client.balance(&user), 1_000);
+    assert_eq!(client.supply(), 1_000);
+}
+
+#[test]
+fn burn_from_enforces_lock_in_addition_to_allowance() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    mint(&env, &client, &admin, &owner, 1_000);
+    client.lock_tokens(&admin, &owner, &400, &200);
+    client.approve(&owner, &spender, &1_000, &u32::MAX);
+
+    assert_eq!(
+        client.try_burn_from(&spender, &owner, &601),
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            TokenError::InsufficientBalance as u32
+        )))
+    );
+    assert_eq!(client.allowance(&owner, &spender), 1_000);
+    assert_eq!(client.balance(&owner), 1_000);
+    assert_eq!(client.supply(), 1_000);
+    client.burn_from(&spender, &owner, &600);
+    assert_eq!(client.balance(&owner), 400);
+    assert_eq!(client.supply(), 400);
+    assert_eq!(client.allowance(&owner, &spender), 400);
+}
+
+#[test]
+fn expired_but_unwithdrawn_lock_still_blocks_burn() {
+    let env = Env::default();
+    let (client, admin) = setup(&env);
+    let user = Address::generate(&env);
+    mint(&env, &client, &admin, &user, 1_000);
+    client.lock_tokens(&admin, &user, &400, &50);
+    env.ledger().set_timestamp(50);
+
+    assert!(!env.as_contract(&client.address, || BcForgeToken::is_locked(&env, &user)));
+    assert_eq!(
+        client.try_burn(&user, &601),
+        Err(Ok(soroban_sdk::Error::from_contract_error(
+            TokenError::InsufficientBalance as u32
+        )))
+    );
 }
 
 #[test]

@@ -5,9 +5,30 @@
   "main": "dist/index.js",
   "module": "dist/index.mjs",
   "types": "dist/index.d.ts",
-  "files": [
-    "dist"
+  "exports": {
+    ".": {
+      "types": {
+        "import": "./dist/index.d.mts",
+        "require": "./dist/index.d.ts",
+        "default": "./dist/index.d.ts"
+      },
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": [
+    "**/*.css"
   ],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/p3ris0n/bc-forge.git"
@@ -19,6 +40,7 @@
     "dev": "tsup src/index.ts --format cjs,esm --watch --dts",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "test": "jest",
+    "test:consumer": "node test-consumer/run-smoke-test.mjs",
     "e2e": "playwright test",
     "storybook": "storybook dev -p 6006 --no-open --disable-telemetry",
     "build-storybook": "storybook build --disable-telemetry",
