@@ -109,3 +109,19 @@ Get-Content checksums.txt | ForEach-Object {
 A matching command prints `OK` for each file. A mismatch prints a checksum error and a non-zero exit status.
 
 The indexer entry in `manifest.json` uses `digest` (`sha256:...`) rather than a filename. Compare that value to `containerimage.digest` in the "Build indexer image and record its digest" log of the release workflow. That digest is the image built for the release; it is not a GHCR pull digest, because this repository does not push the indexer image.
+
+## Rerun behavior
+
+`.github/workflows/release.yml` publishes npm packages on push to `main`. It does not push images to GHCR. `publish-sdk.yml` and `publish-cli.yml` are not on `main`. SDK, CLI, React, and the indexer package publish through this Changesets workflow.
+
+Concurrency is per component on the publish guard (`publish-sdk`, `publish-cli`, `publish-react`, `publish-indexer`) plus `publish-changesets` for the release job. `cancel-in-progress` is false on each group. A second push waits. It cannot cancel a publish that has already started, and one component's release does not cancel another's.
+
+Before `changeset publish`, `scripts/check-version-tag.mjs --before-changeset-publish` queries npm for each package's exact version:
+
+- The version is not on npm: publish continues.
+- The exact version is already published and the registry version matches the intended version, including a tarball: the command exits 0. Changesets will not publish that version again. A rerun is a no-op.
+- The version is already on npm but the registry version or tarball does not match the intended version: the command fails. Do not force-publish over the conflicting artifact.
+
+A direct tag check (`node scripts/check-version-tag.mjs sdk@1.2.3`) still rejects a version that is already on npm. The release path above is the one that treats a matching republish as a no-op.
+
+Re-run the failed Release workflow from the Actions tab after fixing the commit. A successful rerun of a commit whose versions are already on npm with the same version exits 0 and does not publish a second copy.
