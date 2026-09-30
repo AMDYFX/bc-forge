@@ -37,9 +37,14 @@ jobs:
       - name: Check npm before publish
         run: node scripts/check-version-tag.mjs --before-changeset-publish --component ${{ matrix.component }}
 
+  # Lint, test, build, and tarball checks for @bc-forge/react. This job
+  # does not publish. The release job below is the only npm registry write.
+  react-prepublish:
+    uses: ./.github/workflows/publish-react.yml
+
   release:
     name: Release packages
-    needs: component-guard
+    needs: [component-guard, react-prepublish]
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -69,6 +74,9 @@ jobs:
       - name: Validate packages before publish
         run: npm run release:validate
 
+      # react-prepublish already linted, tested, built, and validated the
+      # React tarball. This step builds again and re-checks that tarball
+      # immediately before the only registry write (Changesets).
       - name: Version and publish with Changesets
         id: changesets
         uses: changesets/action@v1
@@ -79,7 +87,9 @@ jobs:
             npm run build --workspace @bc-forge/sdk
             npm run build --workspace @bc-forge/cli
             npm run build --workspace @bc-forge/react
+            npm run prisma:generate --workspace @bc-forge/indexer
             npm run build --workspace @bc-forge/indexer
+            node scripts/validate-react-tarball.mjs
             npm config set provenance true
             node scripts/check-version-tag.mjs --before-changeset-publish
             npx changeset publish

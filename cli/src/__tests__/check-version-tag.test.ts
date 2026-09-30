@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
@@ -7,6 +9,7 @@ import {
   validateVersionTag,
   validateBeforeChangesetPublish,
   classifyRegistryRelease,
+  parseReleaseTag,
   KNOWN_PACKAGES,
 } from '../../../scripts/check-version-tag.mjs';
 
@@ -47,6 +50,48 @@ describe('scripts/check-version-tag.mjs', () => {
       expect(result.success).toBe(true);
       expect(result.component).toBe('react');
       expect(result.version).toBe('1.0.0');
+    });
+
+    it('keeps the prerelease suffix on a React tag', () => {
+      const parsed = parseReleaseTag('refs/tags/react-v1.0.0-beta.1');
+      expect(parsed.component).toBe('react');
+      expect(parsed.version).toBe('1.0.0-beta.1');
+
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'react-tag-'));
+      fs.mkdirSync(path.join(dir, 'react'));
+      fs.writeFileSync(
+        path.join(dir, 'react', 'package.json'),
+        JSON.stringify({ name: '@bc-forge/react', version: '1.0.0-beta.1' }),
+      );
+      const result = validateVersionTag('react-v1.0.0-beta.1', {
+        rootDir: dir,
+        checkRegistry: mockUnpublishedRegistry,
+      });
+      expect(result.version).toBe('1.0.0-beta.1');
+      fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    it('fails a React tag for the wrong component or a mismatched version', () => {
+      expect(() => {
+        validateVersionTag('widget@1.0.0', {
+          rootDir,
+          checkRegistry: mockUnpublishedRegistry,
+        });
+      }).toThrow(/Unknown component "widget"/);
+
+      expect(() => {
+        validateVersionTag('react@9.9.9', {
+          rootDir,
+          checkRegistry: mockUnpublishedRegistry,
+        });
+      }).toThrow(/Tag version "9\.9\.9" does not match package\.json version/);
+
+      expect(() => {
+        validateVersionTag('react-v1.0.0-beta.1', {
+          rootDir,
+          checkRegistry: mockUnpublishedRegistry,
+        });
+      }).toThrow(/Tag version "1\.0\.0-beta\.1" does not match package\.json version/);
     });
 
     it('fails when tag has wrong version', () => {
