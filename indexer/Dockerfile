@@ -1,4 +1,4 @@
-FROM node:20-alpine
+FROM node:24.21.0-alpine
 
 # openssl is required by the Prisma query engine on Alpine.
 RUN apk add --no-cache openssl
@@ -14,7 +14,10 @@ COPY cli/package.json ./cli/package.json
 COPY react/package.json ./react/package.json
 COPY indexer/package.json ./indexer/package.json
 
-RUN npm ci --workspace @bc-forge/indexer --include-workspace-root
+# Install only the indexer workspace. Including the workspace root also
+# installs VitePress, whose esbuild binary is compiled with a vulnerable
+# Go stdlib. The base image's npm bundles tar 7.5.19 (CVE-2026-59873).
+RUN npm ci --workspace @bc-forge/indexer --include-workspace-root=false
 
 COPY sdk ./sdk
 COPY indexer/prisma ./indexer/prisma
