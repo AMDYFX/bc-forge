@@ -35,9 +35,9 @@ export function parseReleaseTag(tagInput) {
     tag = tag.slice('refs/tags/'.length);
   }
 
-  const scoped = tag.match(/^@bc-forge\/([a-z]+)@(.+)$/);
-  const prefixed = tag.match(/^(sdk|cli|react|indexer)-v(.+)$/);
-  const short = tag.match(/^(sdk|cli|react|indexer)@([^@]+)$/);
+  const scoped = tag.match(/^@bc-forge\/([a-z0-9-]+)@(.+)$/);
+  const prefixed = tag.match(/^([a-z0-9-]+)-v(.+)$/);
+  const short = tag.match(/^([a-z0-9-]+)@([^@]+)$/);
   const match = scoped || prefixed || short;
 
   if (!match) {
@@ -49,10 +49,14 @@ export function parseReleaseTag(tagInput) {
   const component = match[1];
   const version = match[2];
 
-  if (!component || !version || !KNOWN_PACKAGES[component]) {
+  if (!component || !version) {
     throw new Error(
       `Malformed tag format: "${tagInput}". Expected format: <component>@<version> (e.g. sdk@1.2.3, cli@0.5.0, react@2.0.1)`,
     );
+  }
+
+  if (!KNOWN_PACKAGES[component]) {
+    throw new Error(`Unknown component "${component}"`);
   }
 
   if (!SEMVER.test(version)) {
