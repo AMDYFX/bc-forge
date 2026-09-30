@@ -10,19 +10,22 @@ export const KNOWN_PACKAGES = {
   indexer: 'indexer/package.json',
 };
 
-/**
- * Validates a Git release tag against package.json manifests and registry state.
- *
- * @param {string} tagInput - Raw Git tag string (e.g. "sdk@0.1.0" or "refs/tags/cli@0.1.0")
- * @param {object} [options]
- * @param {string} [options.rootDir] - Absolute path to repository root
- * @param {function} [options.checkRegistry] - Custom function to check registry publication
- * @returns {{ success: boolean, component: string, version: string, packageName: string, message: string }}
- */
-export function validateVersionTag(tagInput, options = {}) {
-  const currentFilePath = fileURLToPath(import.meta.url);
-  const rootDir = options.rootDir || path.resolve(path.dirname(currentFilePath), '..');
+const SEMVER =
+  /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
+/**
+ * Parse a release tag into a component and version.
+ *
+ * Accepted forms:
+ * - `sdk@1.2.3`
+ * - `sdk-v1.2.3`
+ * - `@bc-forge/sdk@1.2.3` (Changesets tag)
+ * - `refs/tags/` prefixed variants of the above
+ *
+ * @param {string} tagInput
+ * @returns {{ component: string, version: string, tag: string }}
+ */
+export function parseReleaseTag(tagInput) {
   if (!tagInput || typeof tagInput !== 'string' || !tagInput.trim()) {
     throw new Error('No tag provided. Expected format: <component>@<version> (e.g. sdk@1.2.3)');
   }
@@ -32,19 +35,48 @@ export function validateVersionTag(tagInput, options = {}) {
     tag = tag.slice('refs/tags/'.length);
   }
 
-  const atIndex = tag.indexOf('@');
-  const lastAtIndex = tag.lastIndexOf('@');
+  const scoped = tag.match(/^@bc-forge\/([a-z]+)@(.+)$/);
+  const prefixed = tag.match(/^(sdk|cli|react|indexer)-v(.+)$/);
+  const short = tag.match(/^(sdk|cli|react|indexer)@([^@]+)$/);
+  const match = scoped || prefixed || short;
 
-  if (atIndex <= 0 || atIndex !== lastAtIndex || atIndex === tag.length - 1) {
-    throw new Error(`Malformed tag format: "${tagInput}". Expected format: <component>@<version> (e.g. sdk@1.2.3, cli@0.5.0, react@2.0.1)`);
+  if (!match) {
+    throw new Error(
+      `Malformed tag format: "${tagInput}". Expected <component>@<version>, <component>-v<version>, or @bc-forge/<component>@<version>.`,
+    );
   }
 
-  const component = tag.slice(0, atIndex);
-  const version = tag.slice(atIndex + 1);
+  const component = match[1];
+  const version = match[2];
 
-  if (!KNOWN_PACKAGES[component]) {
-    throw new Error(`Unknown component "${component}". Known components: ${Object.keys(KNOWN_PACKAGES).join(', ')}`);
+  if (!component || !version || !KNOWN_PACKAGES[component]) {
+    throw new Error(
+      `Malformed tag format: "${tagInput}". Expected format: <component>@<version> (e.g. sdk@1.2.3, cli@0.5.0, react@2.0.1)`,
+    );
   }
+
+  if (!SEMVER.test(version)) {
+    throw new Error(
+      `Malformed tag format: "${tagInput}". Version "${version}" is not valid semver.`,
+    );
+  }
+
+  return { component, version, tag };
+}
+
+/**
+ * Validates a Git release tag against package.json manifests and registry state.
+ *
+ * @param {string} tagInput - Raw Git tag string (e.g. "sdk@0.1.0" or "refs/tags/cli-v0.1.0")
+ * @param {object} [options]
+ * @param {string} [options.rootDir] - Absolute path to repository root
+ * @param {function} [options.checkRegistry] - Custom function to check registry publication
+ * @returns {{ success: boolean, component: string, version: string, packageName: string, message: string }}
+ */
+export function validateVersionTag(tagInput, options = {}) {
+  const currentFilePath = fileURLToPath(import.meta.url);
+  const rootDir = options.rootDir || path.resolve(path.dirname(currentFilePath), '..');
+  const { component, version, tag } = parseReleaseTag(tagInput);
 
   const packageJsonRelPath = KNOWN_PACKAGES[component];
   const packageJsonPath = path.resolve(rootDir, packageJsonRelPath);
@@ -68,14 +100,18 @@ export function validateVersionTag(tagInput, options = {}) {
   }
 
   if (version !== manifestVersion) {
-    throw new Error(`Tag version "${version}" does not match package.json version "${manifestVersion}" for component "${component}" (${packageJsonRelPath})`);
+    throw new Error(
+      `Tag version "${version}" does not match package.json version "${manifestVersion}" for component "${component}" (${packageJsonRelPath})`,
+    );
   }
 
   const checkRegistry = options.checkRegistry || defaultCheckRegistry;
   const isPublished = checkRegistry(packageName, version);
 
   if (isPublished) {
-    throw new Error(`Version "${version}" of package "${packageName}" is already published on the registry.`);
+    throw new Error(
+      `Version "${version}" of package "${packageName}" is already published on the registry.`,
+    );
   }
 
   return {
@@ -85,6 +121,38 @@ export function validateVersionTag(tagInput, options = {}) {
     packageName,
     message: `Tag "${tag}" is valid for package "${packageName}" at version "${version}".`,
   };
+}
+
+/**
+ * Validate every workspace package Changesets is about to publish.
+ * Packages whose current version is already on the registry are skipped,
+ * because `changeset publish` will not write them again. Unpublished versions
+ * are checked against `<component>@<version>` before the registry write.
+ *
+ * @param {object} [options]
+ * @returns {Array<{ success: boolean, component: string, version: string, packageName: string, message: string }>}
+ */
+export function validateBeforeChangesetPublish(options = {}) {
+  const currentFilePath = fileURLToPath(import.meta.url);
+  const rootDir = options.rootDir || path.resolve(path.dirname(currentFilePath), '..');
+  const checkRegistry = options.checkRegistry || defaultCheckRegistry;
+  const results = [];
+
+  for (const component of Object.keys(KNOWN_PACKAGES)) {
+    const packageJsonPath = path.resolve(rootDir, KNOWN_PACKAGES[component]);
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    if (checkRegistry(packageJson.name, packageJson.version)) {
+      continue;
+    }
+    results.push(
+      validateVersionTag(`${component}@${packageJson.version}`, {
+        rootDir,
+        checkRegistry: () => false,
+      }),
+    );
+  }
+
+  return results;
 }
 
 function defaultCheckRegistry(packageName, version) {
@@ -99,7 +167,7 @@ function defaultCheckRegistry(packageName, version) {
       return true;
     }
     return false;
-  } catch (error) {
+  } catch {
     return false;
   }
 }
@@ -109,6 +177,18 @@ const entryScriptPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
 
 if (entryScriptPath === currentScriptPath) {
   try {
+    if (process.argv[2] === '--before-changeset-publish') {
+      const results = validateBeforeChangesetPublish();
+      if (results.length === 0) {
+        console.log('No unpublished package versions to validate.');
+      } else {
+        for (const result of results) {
+          console.log(`✓ ${result.message}`);
+        }
+      }
+      process.exit(0);
+    }
+
     const rawTag = process.argv[2] || process.env.GITHUB_REF || process.env.GIT_TAG;
     const result = validateVersionTag(rawTag);
     console.log(`✓ ${result.message}`);

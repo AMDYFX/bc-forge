@@ -3,7 +3,11 @@ import { describe, it, expect, vi } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
-import { validateVersionTag, KNOWN_PACKAGES } from '../../../scripts/check-version-tag.mjs';
+import {
+  validateVersionTag,
+  validateBeforeChangesetPublish,
+  KNOWN_PACKAGES,
+} from '../../../scripts/check-version-tag.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const rootDir = path.resolve(__filename, '../../../../');
@@ -92,6 +96,41 @@ describe('scripts/check-version-tag.mjs', () => {
           checkRegistry: mockUnpublishedRegistry,
         });
       }).toThrow(/Unknown component "unknown-pkg"/);
+    });
+
+    it('passes component-v and Changesets tag forms when the version matches', () => {
+      for (const tag of ['sdk-v0.1.0', '@bc-forge/sdk@0.1.0', 'refs/tags/cli-v0.1.0']) {
+        const result = validateVersionTag(tag, {
+          rootDir,
+          checkRegistry: mockUnpublishedRegistry,
+        });
+        expect(result.success).toBe(true);
+      }
+    });
+
+    it('rejects a non-semver version as malformed', () => {
+      expect(() => {
+        validateVersionTag('sdk@not-a-version', {
+          rootDir,
+          checkRegistry: mockUnpublishedRegistry,
+        });
+      }).toThrow(/Malformed tag format/);
+    });
+
+    it('skips already published packages and validates unpublished ones before Changesets publish', () => {
+      const unpublished = validateBeforeChangesetPublish({
+        rootDir,
+        checkRegistry: mockUnpublishedRegistry,
+      });
+      expect(unpublished.map((result) => result.component).sort()).toEqual(
+        Object.keys(KNOWN_PACKAGES).sort(),
+      );
+
+      const none = validateBeforeChangesetPublish({
+        rootDir,
+        checkRegistry: mockPublishedRegistry,
+      });
+      expect(none).toEqual([]);
     });
 
     it('fails when version is already published (mocked registry check)', () => {
