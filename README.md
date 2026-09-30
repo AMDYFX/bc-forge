@@ -382,6 +382,20 @@ const client = new bcForgeClient({
 
 If your local Quickstart setup exposes RPC on a different path, keep the same host and update the URL to match your container configuration.
 
+## Quickstart dApp
+
+A complete testnet dApp example that connects a wallet, reads a balance through `@bc-forge/sdk`, renders it with `@bc-forge/react`, and shows recent mints from the indexer API.
+
+**Location:** [`examples/quickstart/`](examples/quickstart/)
+
+```bash
+cd examples/quickstart
+npm install
+npm run dev
+```
+
+See the [quickstart README](examples/quickstart/README.md) for full setup instructions, including deploying a testnet token and running the indexer.
+
 ## SDK Usage
 
 ```typescript
@@ -475,7 +489,8 @@ docs host is configured in this repository.
 
 The site includes the [spec-to-code traceability matrix](docs/TRACEABILITY.md),
 the [admin key runbook](docs/ADMIN_KEYS.md), and the
-[upgrade guide](docs/UPGRADE_GUIDE.md).
+[upgrade guide](docs/UPGRADE_GUIDE.md). Supported Node, Rust, Stellar CLI, and
+package ranges are in the [compatibility matrix](docs/COMPATIBILITY.md).
 
 ## Community & first contribution
 
@@ -588,3 +603,16 @@ How security reports are rewarded, and whether a hosted bounty program is live, 
 - [Stellar SDK (JS)](https://github.com/stellar/js-stellar-sdk)
 - [SEP-41 Token Standard](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0041.md)
 - [drips.network](https://www.drips.network)
+
+
+## Release artifacts
+
+Names match the package manifests. Nothing in this table is published yet.
+
+| Deliverable | Channel | Install or build | Release notes |
+| --- | --- | --- | --- |
+| SDK (`sdk/`, `@bc-forge/sdk`) | npm | Not yet published. After a release: `npm install @bc-forge/sdk` | [Maintainers](docs/MAINTAINERS.md), [`.github/workflows/release.yml`](.github/workflows/release.yml) |
+| CLI (`cli/`, `@bc-forge/cli`) | npm | Not yet published. After a release: `npm install -g @bc-forge/cli` | [Maintainers](docs/MAINTAINERS.md), [`.github/workflows/release.yml`](.github/workflows/release.yml) |
+| React (`react/`, `@bc-forge/react`) | npm | Not yet published. After a release: `npm install @bc-forge/react` | [Maintainers](docs/MAINTAINERS.md), [`.github/workflows/release.yml`](.github/workflows/release.yml) |
+| Indexer (`indexer/`) | source | Not yet published as an image. Run it from this repo with `docker compose up` in `indexer/`. | [indexer/README.md](indexer/README.md) |
+| Contracts (`contracts/`) | source WASM | Not yet published as release assets. Build with `cargo build --target wasm32-unknown-unknown --release`. | [Upgrade guide](docs/UPGRADE_GUIDE.md) |
