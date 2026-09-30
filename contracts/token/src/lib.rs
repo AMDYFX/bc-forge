@@ -341,7 +341,7 @@ impl BcForgeToken {
         amount: i128,
     ) -> Result<(), TokenError> {
         let from_balance = Self::read_balance(env, from);
-        if from_balance < amount {
+        if Self::get_spendable_balance(env, from) < amount {
             return Err(TokenError::InsufficientBalance);
         }
 
@@ -703,7 +703,7 @@ impl BcForgeToken {
                 };
             }
 
-            if Self::read_balance(&env, &from) < total {
+            if Self::get_spendable_balance(&env, &from) < total {
                 return Err(TokenError::InsufficientBalance);
             }
 
