@@ -63,7 +63,12 @@ jobs:
             exit 1
           fi
 
+      - name: Guard the release tag against the package version
+        run: node scripts/check-version-tag.mjs "${GITHUB_REF_NAME}"
+
       - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           npm config set provenance true
           npm publish --workspace @bc-forge/react --access public
