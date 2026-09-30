@@ -7,9 +7,12 @@
 //! the error-adjacent states the helpers must handle: a user with no lock at
 //! all, and a lock whose unlock timestamp has already passed (expired).
 
-use crate::{BcForgeToken, BcForgeTokenClient, DataKey, LockupState, TokenError};
+use crate::{
+    events::EVENT_SCHEMA_VERSION, BcForgeToken, BcForgeTokenClient, DataKey, LockupState,
+    TokenError,
+};
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
-use soroban_sdk::{symbol_short, Address, Env, String, Symbol, TryFromVal};
+use soroban_sdk::{symbol_short, Address, Env, String, Symbol, TryIntoVal, Val};
 
 fn setup(env: &Env) -> (BcForgeTokenClient<'_>, Address) {
     env.mock_all_auths();
@@ -44,6 +47,22 @@ fn admin_locks_balance_and_emits_event_without_changing_accounting() {
 
     client.lock_tokens(&admin, &user, &400, &200);
 
+    // `env.events().all()` only contains the latest invocation, so read the
+    // lock event before later balance and storage calls.
+    let events = env.events().all();
+    let (_, topics, data) = events.get(events.len() - 1).unwrap();
+    let topic: Symbol = topics.get(0).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(topic, symbol_short!("locked"));
+    let data_vec: soroban_sdk::Vec<Val> = data.try_into_val(&env).unwrap();
+    let event_user: Address = data_vec.get(0).unwrap().try_into_val(&env).unwrap();
+    let event_amount: i128 = data_vec.get(1).unwrap().try_into_val(&env).unwrap();
+    let event_unlock: u64 = data_vec.get(2).unwrap().try_into_val(&env).unwrap();
+    let event_version: u32 = data_vec.get(3).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(event_user, user);
+    assert_eq!(event_amount, 400);
+    assert_eq!(event_unlock, 200);
+    assert_eq!(event_version, EVENT_SCHEMA_VERSION);
+
     assert_eq!(client.balance(&user), 1_000);
     assert_eq!(client.supply(), supply);
     env.as_contract(&client.address, || {
@@ -55,16 +74,6 @@ fn admin_locks_balance_and_emits_event_without_changing_accounting() {
             })
         );
     });
-    let events = env.events().all();
-    let (_, topics, data) = events.last().unwrap();
-    assert_eq!(
-        Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap(),
-        symbol_short!("locked")
-    );
-    assert_eq!(
-        <(Address, i128, u64)>::try_from_val(&env, &data).unwrap(),
-        (user, 400, 200)
-    );
 }
 
 #[test]
