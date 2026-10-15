@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-import type { StorybookConfig } from '@storybook/react-vite';
+import type { StorybookConfig } from "@storybook/react-vite";
 import {
   sharedAliases,
   storybookSdkAlias,
   type SharedAlias,
-} from '../demo/aliases';
+} from "../demo/aliases";
 
 /**
  * Aliases shared with the demo app (#1139).
@@ -23,45 +23,48 @@ import {
 const aliases: readonly SharedAlias[] = [...sharedAliases, storybookSdkAlias];
 
 const config: StorybookConfig = {
-  framework: '@storybook/react-vite',
+  framework: "@storybook/react-vite",
 
   /** Only `*.stories.tsx` is a story file; `fixtures.tsx` / `sdk.ts` are support modules. */
-  stories: ['../stories/*.stories.tsx'],
+  stories: ["../stories/*.stories.tsx"],
 
   /**
    * #1144 — The prototyping toolkit.
    *
    * - `@storybook/addon-a11y` runs axe against every story, which is what turns
    *   "mounts with zero console errors" into a checkable bar.
-   * - `@storybook/addon-viewport` renders the viewport presets declared in
-   *   `preview.tsx`.
    * - `@storybook/addon-docs` builds the MDX docs pages.
    * - `@storybook/addon-themes` provides the light/dark toolbar toggle, wired
    *   to `globalTypes.theme` in `preview.tsx`.
+   *
+   * There is deliberately no `@storybook/addon-viewport` entry: that package was
+   * discontinued after the 9.x line, and Storybook 10 ships the viewport globals
+   * and the `parameters.viewport` API in core. Installing it fails resolution
+   * with `ETARGET`, so the presets declared in `preview.tsx` are honoured by the
+   * built-in toolbar instead.
    */
   addons: [
-    '@storybook/addon-a11y',
-    '@storybook/addon-viewport',
-    '@storybook/addon-docs',
-    '@storybook/addon-themes',
+    "@storybook/addon-a11y",
+    "@storybook/addon-docs",
+    "@storybook/addon-themes",
   ],
 
   core: { disableTelemetry: true },
 
   async viteFinal(config) {
-    const { mergeConfig } = await import('vite');
+    const { mergeConfig } = await import("vite");
     return mergeConfig(config, {
       resolve: { alias: [...aliases] },
       esbuild: {
         // Keep the transform identical to the demo's (see
         // `react/demo/vite.config.ts`).
-        target: 'es2022',
-        legalComments: 'none',
+        target: "es2022",
+        legalComments: "none",
       },
       optimizeDeps: {
         // Excluded from pre-bundling so the alias above wins for every module,
         // not just the ones Vite happens to discover first.
-        exclude: ['@bc-forge/sdk'],
+        exclude: ["@bc-forge/sdk"],
       },
     });
   },
