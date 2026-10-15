@@ -13,13 +13,11 @@ export type {
 } from "./ConfirmationDialog";
 export { DEFAULT_CONFIRMATION_KEYWORD } from "./ConfirmationDialog";
 
-export { Dropdown } from "./Dropdown";
-export type {
-  DropdownProps,
-  DropdownVariant,
-  DropdownSize,
-  DropdownItem,
-} from "./Dropdown";
+export { Modal } from './Modal';
+export type { ModalProps, ModalSize } from './Modal';
+
+export { ConnectWallet } from './ConnectWallet';
+export type { ConnectWalletProps } from './ConnectWallet';
 
 export { EmptyState } from "./EmptyState";
 export type {
