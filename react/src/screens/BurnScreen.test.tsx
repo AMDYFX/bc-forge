@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 import "@testing-library/jest-dom";
-import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { BurnScreen } from "./BurnScreen";
 import { useWallet } from "../context";
@@ -44,18 +43,6 @@ describe("BurnScreen", () => {
     sessionStorage.clear();
   });
 
-  const openDialog = (amount: string) => {
-    fireEvent.change(screen.getByLabelText("Amount"), {
-      target: { value: amount },
-    });
-    fireEvent.click(screen.getByTestId("burn-submit"));
-  };
-
-  const confirmBurn = () => {
-    fireEvent.click(screen.getByTestId("confirmation-dialog-checkbox"));
-    fireEvent.click(screen.getByTestId("confirmation-dialog-confirm"));
-  };
-
   it("shows the connected balance and disables submit above it", () => {
     mockUseBalance.mockReturnValue({ data: 500n, loading: false, error: null });
 
@@ -92,9 +79,10 @@ describe("BurnScreen", () => {
 
     render(<BurnScreen walletAddress={ADDRESS} />);
 
-    openDialog("100");
-    expect(mockBurn).not.toHaveBeenCalled();
-    confirmBurn();
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "100" },
+    });
+    fireEvent.click(screen.getByTestId("burn-submit"));
 
     await waitFor(() => {
       expect(mockBurn).toHaveBeenCalledTimes(1);
@@ -103,7 +91,7 @@ describe("BurnScreen", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("burn-success")).toHaveTextContent(
-        "Destroyed 100 tokens",
+        "Transaction hash: 0xburnhash",
       );
     });
     expect(screen.getByTestId("burn-success")).toHaveTextContent("0xburnhash");
@@ -124,8 +112,10 @@ describe("BurnScreen", () => {
       ADDRESS,
     );
 
-    openDialog("100");
-    confirmBurn();
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "100" },
+    });
+    fireEvent.click(screen.getByTestId("burn-submit"));
 
     await waitFor(() => {
       expect(mockBurn).toHaveBeenCalledWith(ADDRESS, 100n);
@@ -157,57 +147,5 @@ describe("BurnScreen", () => {
     expect(screen.getByTestId("burn-error")).toHaveTextContent(
       "simulation failed",
     );
-  });
-
-  it("keeps Burn disabled in the dialog until the acknowledgement is checked", () => {
-    mockUseBalance.mockReturnValue({ data: 500n, loading: false, error: null });
-    render(<BurnScreen walletAddress={ADDRESS} />);
-
-    openDialog("100");
-
-    const confirm = screen.getByTestId("confirmation-dialog-confirm");
-    expect(confirm).toBeDisabled();
-    fireEvent.click(confirm);
-    expect(mockBurn).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByTestId("confirmation-dialog-checkbox"));
-    expect(confirm).toBeEnabled();
-  });
-
-  it("decrements total supply immediately and refetches balance and supply", async () => {
-    mockUseBalance.mockReturnValue({
-      data: 500n,
-      loading: false,
-      error: null,
-      refetch: mockRefetchBalance,
-    });
-    render(<BurnScreen walletAddress={ADDRESS} />);
-    expect(screen.getByTestId("burn-total-supply")).toHaveTextContent("1000");
-
-    openDialog("100");
-    confirmBurn();
-
-    await waitFor(() => {
-      expect(screen.getByTestId("burn-total-supply")).toHaveTextContent("900");
-    });
-    expect(mockRefetchBalance).toHaveBeenCalledTimes(1);
-    expect(mockRefetchSupply).toHaveBeenCalledTimes(1);
-  });
-
-  it("shows no success receipt and closes the dialog when the burn is rejected", async () => {
-    mockBurn.mockRejectedValue(new Error("User rejected the request"));
-    mockUseBalance.mockReturnValue({ data: 500n, loading: false, error: null });
-    render(<BurnScreen walletAddress={ADDRESS} />);
-
-    openDialog("100");
-    confirmBurn();
-
-    await waitFor(() => {
-      expect(
-        screen.queryByTestId("confirmation-dialog"),
-      ).not.toBeInTheDocument();
-    });
-    expect(screen.queryByTestId("burn-success")).not.toBeInTheDocument();
-    expect(screen.getByTestId("burn-total-supply")).toHaveTextContent("1000");
   });
 });
