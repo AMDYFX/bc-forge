@@ -230,6 +230,12 @@ export const FocusTrap: Story = {
 
     await userEvent.tab({ shift: true });
     await expect(confirm).toHaveFocus();
+
+    // Drop focus before the frame is recorded. The focus ring is the only part
+    // of this story that renders differently at sub-pixel level between runs,
+    // and the visual suite compares at zero tolerance, so leaving it drawn made
+    // the baseline flap by around ten pixels.
+    (document.activeElement as HTMLElement | null)?.blur();
   },
 };
 
