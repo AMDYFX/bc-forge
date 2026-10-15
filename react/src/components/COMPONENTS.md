@@ -49,6 +49,118 @@ provided the badge becomes a keyboard-focusable interactive control
 <Badge variant="warning" onClick={() => alert('clicked')}>Dismiss</Badge>
 ```
 
+## Pagination
+
+Previous/next controls, a windowed list of page buttons, and a page-size
+selector. `getPageItems` is exported on its own for callers that render their own
+controls: it returns page numbers ascending, with `null` marking a run that
+collapsed into an ellipsis.
+
+| Prop                   | Type                                | Default            | Description                                                             |
+| ---------------------- | ----------------------------------- | ------------------ | ----------------------------------------------------------------------- |
+| `page`                 | `number`                            | — (required)       | Current 1-based page; clamped into `[1, pageCount]` before rendering.    |
+| `pageCount`            | `number`                            | — (required)       | Total pages; anything below 1 is treated as a single page.               |
+| `pageSize`             | `number`                            | `10`               | Rows per page, reported back through `onPageChange`.                    |
+| `pageSizeOptions`      | `readonly number[]`                 | `[10, 25, 50, 100]` | Sizes offered by the selector; the active one is always added.         |
+| `showPageSizeSelector` | `boolean`                           | `false`            | Hide the selector for fixed-size listings.                               |
+| `siblingCount`         | `number`                            | `1`                | Pages kept on each side of the current one.                              |
+| `disabled`             | `boolean`                           | `false`            | Disables every control, e.g. while a page loads.                         |
+| `size`                 | `'sm' \| 'md' \| 'lg'`              | `'md'`             | Sizing preset.                                                           |
+| `onPageChange`         | `(page: number, pageSize: number) => void` | —           | Fired with an always in-range page; changing the size reports page `1`. |
+
+Previous is disabled on the first page, Next on the last. The `nav` carries an
+`aria-label` (`label`), the active button `aria-current="page"`, and every
+control has an accessible name.
+
+```tsx
+<Pagination page={page} pageCount={totalPages} pageSize={25} onPageChange={setPage} />
+```
+
+## MetricCard
+
+A single figure with a trend badge. `MetricStatBox` is the compact form — it
+takes `label` instead of `title` and defaults to the `sm` size.
+
+| Prop           | Type                                              | Default              | Description                                                          |
+| -------------- | ------------------------------------------------- | -------------------- | -------------------------------------------------------------------- |
+| `title`        | `string`                                          | — (required)         | Heading of the metric.                                               |
+| `value`        | `string \| number \| bigint \| null \| undefined` | — (required)         | The metric; `bigint` is stringified, never coerced through `Number`.  |
+| `delta`        | `number \| null`                                  | —                    | Percentage change; the sign picks success / danger / neutral.        |
+| `deltaLabel`   | `string`                                          | —                    | Caption inside the badge, e.g. `'vs last week'`.                     |
+| `subtitle`     | `React.ReactNode`                                 | —                    | Secondary line under the value.                                      |
+| `loading`      | `boolean`                                         | `false`              | Renders the skeleton instead of the value.                            |
+| `loadingLabel` | `string`                                          | `'Loading…'`         | Announced through a `role="status"` while the skeleton shows.         |
+| `size`         | `'sm' \| 'md' \| 'lg'`                            | `'md'`               | Sizing preset.                                                       |
+
+The skeleton sets `aria-busy="true"` and keeps the value node out of both the
+visual and accessibility trees.
+
+```tsx
+<MetricCard title="Total supply" value={supply} delta={2.4} deltaLabel="vs last week" />
+<MetricCard title="TVL" value={tvl} loading />
+```
+
+## ConfirmationDialog
+
+Guards a destructive action (burn, revoke role). Confirm stays disabled until
+the acknowledgement gate is satisfied, so the dialog cannot be dismissed into a
+write by a stray click. It is self-contained: its own portal, backdrop, `Escape`
+handling and focus trap.
+
+| Prop                 | Type                              | Default                          | Description                                                       |
+| -------------------- | --------------------------------- | -------------------------------- | ----------------------------------------------------------------- |
+| `open`               | `boolean`                         | — (required)                     | Nothing renders while false.                                      |
+| `onClose`            | `() => void`                      | — (required)                     | Called by Cancel, the backdrop and `Escape`.                      |
+| `onConfirm`          | `() => void`                      | — (required)                     | Called by Confirm once the gate is satisfied.                     |
+| `title`              | `string`                          | — (required)                     | Heading, wired via `aria-labelledby`.                             |
+| `description`        | `React.ReactNode`                 | —                                | Body copy, wired via `aria-describedby`.                          |
+| `children`           | `React.ReactNode`                 | —                                | Extra content between the description and the gate.               |
+| `variant`            | `'danger' \| 'warning'`           | `'danger'`                       | Tone of the dialog and the confirming button.                     |
+| `confirmationMode`   | `'checkbox' \| 'keyword' \| 'none'` | `'checkbox'`                   | Which gate guards Confirm.                                         |
+| `confirmationKeyword`| `string`                          | `'CONFIRM'`                      | Word to type in `'keyword'` mode; case- and trim-insensitive.     |
+| `confirmationLabel`  | `string`                          | `'I understand this cannot be undone.'` | Text of the confirmation checkbox.                         |
+| `busy`               | `boolean`                         | `false`                          | In-flight write: locks both buttons and unbinds `Escape`.         |
+
+Focus moves onto the panel (never straight onto the destructive button), `Tab`
+cycles within the dialog, and the previously focused element is refocused on
+close. The gate resets between openings because the body unmounts with `open`.
+
+```tsx
+<ConfirmationDialog
+  open={pending}
+  onClose={cancel}
+  onConfirm={burn}
+  title="Burn 1,000,000 BCC?"
+  confirmationMode="keyword"
+  confirmationKeyword="BURN"
+  busy={submitting}
+/>
+```
+
+## EmptyState
+
+The zero-result state for a table, a listing or a search. Renders a built-in
+inline SVG by default; pass `icon={null}` for none, or any node for your own.
+
+| Prop               | Type                                | Default  | Description                                                     |
+| ------------------ | ----------------------------------- | -------- | --------------------------------------------------------------- |
+| `title`            | `string`                            | —        | Short headline, e.g. `'No transactions yet'`.                    |
+| `icon`             | `React.ReactNode`                   | built-in | Illustration; `null` renders none.                               |
+| `description`      | `React.ReactNode`                   | —        | One or two sentences on what to do next.                         |
+| `action`           | `EmptyStateAction \| React.ReactNode` | —      | Primary next step; an object renders the button for you.         |
+| `secondaryAction`  | `EmptyStateAction \| React.ReactNode` | —      | Lower-emphasis alternative.                                      |
+| `size`             | `'sm' \| 'md' \| 'lg'`              | `'md'`   | Sizing preset.                                                   |
+
+```tsx
+<EmptyState
+  icon={<WalletIcon />}
+  title="No transactions yet"
+  description="Deposits and rewards will appear here once the vault is funded."
+  action={{ label: 'Deposit', onClick: openDeposit }}
+  secondaryAction={{ label: 'Learn more', onClick: openDocs }}
+/>
+```
+
 ## Product components (#950)
 
 These build on the SDK rather than raw RPC: mint and vault writes go through
