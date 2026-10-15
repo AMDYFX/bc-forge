@@ -40,6 +40,7 @@
     "axios": "1.20.0",
     "@stellar/stellar-sdk": {
       "axios": "1.20.0"
-    }
+    },
+    "proxy-addr": "^2.0.8"
   }
 }
