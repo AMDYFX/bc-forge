@@ -58,6 +58,10 @@ jobs:
       - name: Run React unit tests
         run: npm test --workspace @bc-forge/react
 
+      - name: Install React demo dependencies
+        working-directory: react/demo
+        run: npm install --no-audit --no-fund
+
       - name: Install Playwright browsers & system dependencies
         run: npx playwright install --with-deps chromium
 
