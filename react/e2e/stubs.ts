@@ -181,7 +181,8 @@ export async function installNetworkStubs(
           result: {
             status: "SUCCESS",
             latestLedger: 100000,
-            resultXdr: "AAAAAQAAAAE=",
+            resultXdr: 'AAAAAAAAAGQAAAAAAAAAAQAAAAAAAAAYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==',
+            resultMetaXdr: 'AAAAAQAAAAA=',
           },
         }),
       });
@@ -238,18 +239,17 @@ export async function installNetworkStubs(
           result: {
             latestLedger: 100000,
             minResourceFee: '100',
-            transactionData: 'AAAAAQAAAAE=',
+            transactionData: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
             results: [
               {
                 auth: [],
-                xdr: 'AAAAAQAAAAE=',
-                retval: retvalXdr,
+                xdr: retvalXdr,
               },
             ],
             result: {
               auth: [],
               retval: retvalXdr,
-              xdr: 'AAAAAQAAAAE=',
+              xdr: retvalXdr,
             },
             retval: retvalXdr,
           },
