@@ -178,13 +178,15 @@ Reports one transaction's lifecycle. `pending` and `success` render
 `role="status"`, `error` renders `role="alert"`, so a failure is announced
 assertively and progress politely.
 
-| Prop            | Type                                | Default                 | Description                                                    |
-| --------------- | ----------------------------------- | ----------------------- | -------------------------------------------------------------- |
-| `status`        | `'pending' \| 'success' \| 'error'` | `'pending'`             | Transaction state.                                             |
-| `hash`          | `string`                            | —                       | Rendered in full so it stays copyable.                         |
-| `error`         | `string \| Error`                   | —                       | Failure text; only shown for `status="error"`.                 |
-| `label`         | `string`                            | —                       | Operation name, e.g. `'Mint'`.                                 |
-| `explorerUrl`   | `string`                            | —                       | Explorer base URL; the hash is appended as a link.             |
+| Prop             | Type                                | Default                 | Description                                                    |
+| ---------------- | ----------------------------------- | ----------------------- | -------------------------------------------------------------- |
+| `status`         | `'pending' \| 'success' \| 'error'` | `'pending'`             | Transaction state.                                             |
+| `hash`           | `string`                            | —                       | Rendered in full so it stays copyable.                         |
+| `error`          | `string \| Error`                   | —                       | Failure text; only shown for `status="error"`.                 |
+| `label`          | `string`                            | —                       | Operation name, e.g. `'Mint'`.                                 |
+| `explorerUrl`    | `string`                            | —                       | Explorer base URL; the hash is appended as a link.             |
+| `isHardwareWallet` | `boolean`                         | `false`                 | When true and pending, displays 'Confirm on Ledger device'.    |
+
 | `autoDismissMs` | `number`                            | —                       | Auto-dismiss delay; requires `onDismiss`.                      |
 | `onDismiss`     | `() => void`                        | —                       | Renders a dismiss button when set.                             |
 
