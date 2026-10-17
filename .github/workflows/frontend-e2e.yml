@@ -79,3 +79,4 @@ jobs:
           path: react/playwright-report/
           retention-days: 14
           if-no-files-found: ignore
+# Automated CI trigger
