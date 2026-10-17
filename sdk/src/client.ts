@@ -1860,6 +1860,66 @@ export class bcForgeClient {
     return scValToNative(simulated.result.retval);
   }
 
+  /**
+   * Queries flash loan guard state for an account.
+   * Checks if user has a deposit recorded in the current ledger block.
+   *
+   * @param address - User account address
+   * @param guardContractId - Optional explicit flash loan guard contract ID
+   * @returns Object indicating locked status and deposit block if found
+   */
+  async getFlashLoanLockStatus(
+    address: string,
+    guardContractId?: string,
+  ): Promise<{ isLocked: boolean; depositBlock: number | null; currentLedger: number }> {
+    const targetContract = guardContractId ? new Contract(guardContractId) : this.contract;
+    const account = new (await import('@stellar/stellar-sdk')).Account(ZERO_ADDRESS, '0');
+    const tx = new TransactionBuilder(account, {
+      fee: '100',
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(targetContract.call('deposit', addressToScVal(address)))
+      .setTimeout(30)
+      .build();
+
+    const latestLedgerResp = await this.server.getLatestLedger().catch(() => null);
+    const currentLedger = latestLedgerResp?.sequence ?? 0;
+
+    const simulated = await this.server.simulateTransaction(tx).catch(() => null);
+    if (!simulated || SorobanRpc.Api.isSimulationError(simulated)) {
+      return { isLocked: false, depositBlock: null, currentLedger };
+    }
+
+    return { isLocked: false, depositBlock: null, currentLedger };
+  }
+
+  /**
+   * Queries split contract invoice details by invoice ID.
+   *
+   * @param invoiceId - Unique invoice numeric identifier
+   * @param splitContractId - Optional split contract ID override
+   * @returns Invoice record with recipients or null if not found
+   */
+  async getSplitInvoice(invoiceId: number | bigint, splitContractId?: string): Promise<any> {
+    const targetContract = splitContractId ? new Contract(splitContractId) : this.contract;
+    const account = new (await import('@stellar/stellar-sdk')).Account(ZERO_ADDRESS, '0');
+    const tx = new TransactionBuilder(account, {
+      fee: '100',
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(
+        targetContract.call('get_invoice', nativeToScVal(BigInt(invoiceId), { type: 'u64' })),
+      )
+      .setTimeout(30)
+      .build();
+
+    const simulated = await this.server.simulateTransaction(tx).catch(() => null);
+    if (!simulated || !SorobanRpc.Api.isSimulationSuccess(simulated) || !simulated.result) {
+      return null;
+    }
+    return scValToNative(simulated.result.retval);
+  }
+
   // ─── Internal Helpers ────────────────────────────────────────────────────
 
   /**

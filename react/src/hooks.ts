@@ -4135,3 +4135,390 @@ export function useBatchContractReads<
     refetch: executeBatch,
   };
 }
+
+// ─── Flash Loan Guard Status (#1201) ─────────────────────────────────────────
+
+/**
+ * Return state for {@link useFlashLoanGuardStatus}.
+ */
+export interface FlashLoanGuardStatusResult {
+  /** Whether the user's account is locked due to same-ledger deposit */
+  isLocked: boolean;
+  /** Warning message if flash loan locks are currently engaged */
+  warning: string | null;
+  /** Deposit ledger sequence if recorded, or null */
+  depositBlock: number | null;
+  /** Current ledger sequence number */
+  currentLedger: number | null;
+  /** Loading state */
+  loading: boolean;
+  /** Error encountered while fetching status */
+  error: Error | null;
+  /** Refetch status */
+  refetch: () => Promise<void>;
+}
+
+/**
+ * Configuration options for {@link useFlashLoanGuardStatus}.
+ */
+export interface UseFlashLoanGuardStatusOptions {
+  /** User address to verify (defaults to connected wallet address) */
+  address?: string;
+  /** Optional explicit flash loan guard contract ID */
+  guardContractId?: string;
+  /** Optional explicit client override */
+  client?: bcForgeClient | null;
+  /** Polling interval in milliseconds */
+  pollIntervalMs?: number;
+  /** Whether the check is enabled */
+  enabled?: boolean;
+}
+
+/**
+ * Hook verifying flash loan guard contract lock state and reentrancy flags (#1201).
+ *
+ * Checks if a user has deposited within the same ledger sequence, which temporarily
+ * locks withdrawals to prevent flash-loan-funded reentrancy loops.
+ *
+ * @param options - Options including user address, polling interval, and guard contract ID.
+ * @returns `{ isLocked, warning, depositBlock, currentLedger, loading, error, refetch }`
+ */
+export function useFlashLoanGuardStatus(
+  options: UseFlashLoanGuardStatusOptions = {},
+): FlashLoanGuardStatusResult {
+  const {
+    address: addressOption,
+    guardContractId,
+    client: clientOption,
+    pollIntervalMs,
+    enabled = true,
+  } = options;
+
+  const { publicKey: walletPublicKey } = useWallet();
+  const address = addressOption || walletPublicKey;
+
+  const contextClient = useOptionalBcForgeClient();
+  const client = clientOption !== undefined ? clientOption : contextClient;
+
+  const [isLocked, setIsLocked] = useState(false);
+  const [warning, setWarning] = useState<string | null>(null);
+  const [depositBlock, setDepositBlock] = useState<number | null>(null);
+  const [currentLedger, setCurrentLedger] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const checkStatus = useCallback(async () => {
+    if (!enabled || !address) {
+      if (mountedRef.current) {
+        setIsLocked(false);
+        setWarning(null);
+        setDepositBlock(null);
+        setCurrentLedger(null);
+        setLoading(false);
+        setError(null);
+      }
+      return;
+    }
+
+    try {
+      if (mountedRef.current) {
+        setLoading(true);
+        setError(null);
+      }
+
+      if (
+        client &&
+        typeof (client as any).getFlashLoanLockStatus === "function"
+      ) {
+        const res = await (client as any).getFlashLoanLockStatus(
+          address,
+          guardContractId,
+        );
+        if (mountedRef.current) {
+          setIsLocked(res.isLocked);
+          setDepositBlock(res.depositBlock);
+          setCurrentLedger(res.currentLedger);
+          if (res.isLocked) {
+            setWarning(
+              "Flash loan guard active: withdrawals are prohibited in the same ledger block as deposit.",
+            );
+          } else {
+            setWarning(null);
+          }
+        }
+      } else {
+        if (mountedRef.current) {
+          setIsLocked(false);
+          setWarning(null);
+          setDepositBlock(null);
+          setCurrentLedger(null);
+        }
+      }
+    } catch (err) {
+      const failure = err instanceof Error ? err : new Error(String(err));
+      if (mountedRef.current) {
+        setError(failure);
+        setWarning("Failed to verify flash loan guard status.");
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [enabled, address, client, guardContractId]);
+
+  useEffect(() => {
+    void checkStatus();
+  }, [checkStatus]);
+
+  useEffect(() => {
+    if (!pollIntervalMs || pollIntervalMs <= 0 || !enabled) return;
+    const interval = setInterval(() => {
+      void checkStatus();
+    }, pollIntervalMs);
+    return () => clearInterval(interval);
+  }, [checkStatus, pollIntervalMs, enabled]);
+
+  return {
+    isLocked,
+    warning,
+    depositBlock,
+    currentLedger,
+    loading,
+    error,
+    refetch: checkStatus,
+  };
+}
+
+// ─── Split Recipient Shares (#1202) ──────────────────────────────────────────
+
+/**
+ * Single recipient share breakdown from a split invoice.
+ */
+export interface SplitRecipientShare {
+  /** Recipient Stellar address */
+  address: string;
+  /** Allocated token amount for this recipient */
+  amount: bigint;
+  /** Percentage share of the total invoice pool (0 - 100) */
+  percentage: number;
+  /** Unreleased / claimable dividend balance for this recipient */
+  claimable: bigint;
+}
+
+/**
+ * Return state for {@link useSplitRecipientShares}.
+ */
+export interface UseSplitRecipientSharesResult {
+  /** Array of recipient allocations with shares and claimable dividends */
+  recipients: SplitRecipientShare[];
+  /** Total invoice amount across all recipients */
+  totalAmount: bigint | null;
+  /** Amount already released */
+  releasedAmount: bigint | null;
+  /** Invoice status string */
+  status: string | null;
+  /** Creation ledger sequence */
+  createdAt: number | null;
+  /** Loading state */
+  loading: boolean;
+  /** Error encountered while querying */
+  error: Error | null;
+  /** Refetch invoice details */
+  refetch: () => Promise<void>;
+}
+
+/**
+ * Configuration options for {@link useSplitRecipientShares}.
+ */
+export interface UseSplitRecipientSharesOptions {
+  /** Invoice ID to query */
+  invoiceId: number | bigint;
+  /** Optional split contract ID override */
+  splitContractId?: string;
+  /** Optional explicit client override */
+  client?: bcForgeClient | null;
+  /** Polling interval in milliseconds */
+  pollIntervalMs?: number;
+  /** Whether the query is enabled */
+  enabled?: boolean;
+}
+
+/**
+ * Hook querying split contract recipients, allocation weights, and unreleased revenue balances (#1202).
+ *
+ * @param options - Configuration including invoiceId and optional splitContractId.
+ * @returns `{ recipients, totalAmount, releasedAmount, status, createdAt, loading, error, refetch }`
+ */
+export function useSplitRecipientShares(
+  options: UseSplitRecipientSharesOptions,
+): UseSplitRecipientSharesResult {
+  const {
+    invoiceId,
+    splitContractId,
+    client: clientOption,
+    pollIntervalMs,
+    enabled = true,
+  } = options;
+
+  const contextClient = useOptionalBcForgeClient();
+  const client = clientOption !== undefined ? clientOption : contextClient;
+
+  const [recipients, setRecipients] = useState<SplitRecipientShare[]>([]);
+  const [totalAmount, setTotalAmount] = useState<bigint | null>(null);
+  const [releasedAmount, setReleasedAmount] = useState<bigint | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [createdAt, setCreatedAt] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const fetchShares = useCallback(async () => {
+    if (!enabled || invoiceId === undefined || invoiceId === null) {
+      if (mountedRef.current) {
+        setRecipients([]);
+        setTotalAmount(null);
+        setReleasedAmount(null);
+        setStatus(null);
+        setCreatedAt(null);
+        setLoading(false);
+        setError(null);
+      }
+      return;
+    }
+
+    try {
+      if (mountedRef.current) {
+        setLoading(true);
+        setError(null);
+      }
+
+      if (client && typeof (client as any).getSplitInvoice === "function") {
+        const invoice = await (client as any).getSplitInvoice(
+          invoiceId,
+          splitContractId,
+        );
+        if (mountedRef.current) {
+          if (!invoice) {
+            setRecipients([]);
+            setTotalAmount(null);
+            setReleasedAmount(null);
+            setStatus(null);
+            setCreatedAt(null);
+          } else {
+            const total = BigInt(
+              invoice.total_amount ?? invoice.totalAmount ?? 0,
+            );
+            const released = BigInt(
+              invoice.released_amount ?? invoice.releasedAmount ?? 0,
+            );
+            const rawRecipients: Array<{
+              to?: string;
+              address?: string;
+              amount?: string | number | bigint;
+            }> = invoice.recipients ?? [];
+
+            const parsedRecipients: SplitRecipientShare[] = rawRecipients.map(
+              (r) => {
+                const addr = r.to ?? r.address ?? "";
+                const amt = BigInt(r.amount ?? 0);
+                const percentage =
+                  total > 0n ? Number((amt * 10000n) / total) / 100 : 0;
+                // If invoice is Pending, claimable is full amount; if FullyReleased, 0n
+                const invStatus = invoice.status;
+                const isPending =
+                  invStatus === "Pending" ||
+                  invStatus === 0 ||
+                  invStatus === "pending";
+                const isFullyReleased =
+                  invStatus === "FullyReleased" ||
+                  invStatus === 2 ||
+                  invStatus === "fully_released";
+                const claimable = isFullyReleased ? 0n : isPending ? amt : 0n;
+
+                return {
+                  address: addr,
+                  amount: amt,
+                  percentage,
+                  claimable,
+                };
+              },
+            );
+
+            setRecipients(parsedRecipients);
+            setTotalAmount(total);
+            setReleasedAmount(released);
+            setStatus(
+              typeof invoice.status === "string"
+                ? invoice.status
+                : typeof invoice.status === "number"
+                  ? ([
+                      "Pending",
+                      "PartiallyReleased",
+                      "FullyReleased",
+                      "Failed",
+                    ][invoice.status] ?? "Unknown")
+                  : "Unknown",
+            );
+            setCreatedAt(Number(invoice.created_at ?? invoice.createdAt ?? 0));
+          }
+        }
+      } else {
+        if (mountedRef.current) {
+          setRecipients([]);
+          setTotalAmount(null);
+          setReleasedAmount(null);
+          setStatus(null);
+          setCreatedAt(null);
+        }
+      }
+    } catch (err) {
+      const failure = err instanceof Error ? err : new Error(String(err));
+      if (mountedRef.current) {
+        setError(failure);
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [enabled, invoiceId, splitContractId, client]);
+
+  useEffect(() => {
+    void fetchShares();
+  }, [fetchShares]);
+
+  useEffect(() => {
+    if (!pollIntervalMs || pollIntervalMs <= 0 || !enabled) return;
+    const interval = setInterval(() => {
+      void fetchShares();
+    }, pollIntervalMs);
+    return () => clearInterval(interval);
+  }, [fetchShares, pollIntervalMs, enabled]);
+
+  return {
+    recipients,
+    totalAmount,
+    releasedAmount,
+    status,
+    createdAt,
+    loading,
+    error,
+    refetch: fetchShares,
+  };
+}

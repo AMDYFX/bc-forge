@@ -30,6 +30,8 @@ const mockClient = {
   estimateTransferFee: jest.fn(),
   accountExists: jest.fn(),
   extendTtl: jest.fn(),
+  getFlashLoanLockStatus: jest.fn(),
+  getSplitInvoice: jest.fn(),
   getVestingInfo: jest.fn(),
   getTotalSupply: jest.fn(),
 };
@@ -80,6 +82,8 @@ import {
   useBatchContractReads,
   useEstimateFee,
   useExtendContractTtl,
+  useFlashLoanGuardStatus,
+  useSplitRecipientShares,
   useHasRole,
   useLatestLedger,
   useProposalVote,
@@ -1538,6 +1542,121 @@ describe("React client hooks", () => {
       expect(result.current.error?.message).toBe("RPC Network Timeout");
       expect(result.current.loading).toBe(false);
       expect(result.current.data).toBeNull();
+    });
+  });
+describe("useFlashLoanGuardStatus (#1201)", () => {
+    it("returns unlocked state when flash loan guard is not engaged", async () => {
+      mockClient.getFlashLoanLockStatus.mockResolvedValue({
+        isLocked: false,
+        depositBlock: null,
+        currentLedger: 100,
+      });
+
+      const { result } = renderHook(() =>
+        useFlashLoanGuardStatus({ address: "GUSER123" }),
+      );
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.isLocked).toBe(false);
+      expect(result.current.warning).toBeNull();
+      expect(result.current.currentLedger).toBe(100);
+      expect(result.current.depositBlock).toBeNull();
+    });
+
+    it("returns locked state and warning when flash loan guard is active", async () => {
+      mockClient.getFlashLoanLockStatus.mockResolvedValue({
+        isLocked: true,
+        depositBlock: 100,
+        currentLedger: 100,
+      });
+
+      const { result } = renderHook(() =>
+        useFlashLoanGuardStatus({ address: "GUSER123" }),
+      );
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.isLocked).toBe(true);
+      expect(result.current.warning).toContain("withdrawals are prohibited");
+      expect(result.current.depositBlock).toBe(100);
+    });
+
+    it("handles errors gracefully without throwing unhandled exceptions", async () => {
+      mockClient.getFlashLoanLockStatus.mockRejectedValue(
+        new Error("RPC Timeout"),
+      );
+
+      const { result } = renderHook(() =>
+        useFlashLoanGuardStatus({ address: "GUSER123" }),
+      );
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.error).toBeDefined();
+      expect(result.current.warning).toBe(
+        "Failed to verify flash loan guard status.",
+      );
+    });
+  });
+
+  describe("useSplitRecipientShares (#1202)", () => {
+    it("returns recipient percentage shares and claimable dividends", async () => {
+      mockClient.getSplitInvoice.mockResolvedValue({
+        invoice_id: 1,
+        total_amount: "10000",
+        released_amount: "0",
+        status: "Pending",
+        created_at: 50,
+        recipients: [
+          { to: "GRECIPIENT1", amount: "6000" },
+          { to: "GRECIPIENT2", amount: "4000" },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useSplitRecipientShares({ invoiceId: 1 }),
+      );
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.totalAmount).toBe(10000n);
+      expect(result.current.releasedAmount).toBe(0n);
+      expect(result.current.status).toBe("Pending");
+      expect(result.current.recipients).toHaveLength(2);
+
+      const r1 = result.current.recipients[0];
+      expect(r1.address).toBe("GRECIPIENT1");
+      expect(r1.amount).toBe(6000n);
+      expect(r1.percentage).toBe(60);
+      expect(r1.claimable).toBe(6000n);
+
+      const r2 = result.current.recipients[1];
+      expect(r2.address).toBe("GRECIPIENT2");
+      expect(r2.amount).toBe(4000n);
+      expect(r2.percentage).toBe(40);
+      expect(r2.claimable).toBe(4000n);
+    });
+
+    it("handles missing invoice cleanly", async () => {
+      mockClient.getSplitInvoice.mockResolvedValue(null);
+
+      const { result } = renderHook(() =>
+        useSplitRecipientShares({ invoiceId: 999 }),
+      );
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.recipients).toEqual([]);
+      expect(result.current.totalAmount).toBeNull();
+      expect(result.current.error).toBeNull();
+    });
+
+    it("handles RPC errors gracefully with typed error state", async () => {
+      mockClient.getSplitInvoice.mockRejectedValue(new Error("Network Error"));
+
+      const { result } = renderHook(() =>
+        useSplitRecipientShares({ invoiceId: 1 }),
+      );
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.error).toBeDefined();
+      expect(result.current.recipients).toEqual([]);
     });
   });
 });

@@ -14,8 +14,9 @@ export interface MintScreenProps {
 }
 
 /**
- * Token mint screen (#903). Collects a recipient address and a positive
+ * Token mint screen (#903, #1189, #1204, #1205). Collects a recipient address and a positive
  * integer amount, then submits through the connected wallet via `useMint`.
+ * Features caller minter role checking, reactive helper text feedback, and immediate validation.
  * The component never asks for a secret key.
  */
 export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
@@ -120,16 +121,68 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
         </p>
       </div>
 
-      <div style={{ fontSize: "14px", color: "#4b5563" }}>
-        Signing account:{" "}
-        <span
-          data-testid="mint-connected-account"
-          style={{ fontFamily: "monospace" }}
-        >
-          {connected && publicKey
-            ? truncatePublicKey(publicKey)
-            : "Not connected"}
-        </span>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: "8px",
+          fontSize: "14px",
+          color: "#4b5563",
+        }}
+      >
+        <div>
+          Signing account:{" "}
+          <span
+            data-testid="mint-connected-account"
+            style={{ fontFamily: "monospace" }}
+          >
+            {connected && publicKey
+              ? truncatePublicKey(publicKey)
+              : "Not connected"}
+          </span>
+        </div>
+
+        {connected && (
+          <div
+            data-testid="minter-role-indicator"
+            style={{ display: "flex", alignItems: "center", gap: "8px" }}
+          >
+            Role status:{" "}
+            {roleLoading ? (
+              <span style={{ color: "#6b7280" }}>Verifying permissions…</span>
+            ) : isMinter === true ? (
+              <span
+                style={{
+                  display: "inline-block",
+                  padding: "2px 8px",
+                  borderRadius: "4px",
+                  backgroundColor: "#dcfce7",
+                  color: "#15803d",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                }}
+              >
+                Minter Authorized
+              </span>
+            ) : isMinter === false ? (
+              <span
+                style={{
+                  display: "inline-block",
+                  padding: "2px 8px",
+                  borderRadius: "4px",
+                  backgroundColor: "#fee2e2",
+                  color: "#b91c1c",
+                  fontSize: "12px",
+                  fontWeight: 600,
+                }}
+              >
+                Not Authorized (Minter Role Required)
+              </span>
+            ) : (
+              <span style={{ color: "#6b7280" }}>Permission not verified</span>
+            )}
+          </div>
+        )}
       </div>
 
       {lacksMinterRole && (
@@ -175,7 +228,7 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
         style={{
           display: "flex",
           flexDirection: "column",
-          gap: "12px",
+          gap: "16px",
           padding: "20px",
           border: "1px solid #e5e7eb",
           borderRadius: "8px",
@@ -206,6 +259,10 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
               outline: "none",
             }}
           />
+          <span style={{ fontSize: "12px", color: "#6b7280" }}>
+            The public Stellar account (G... or C... identifier) that will
+            receive newly minted tokens.
+          </span>
         </label>
 
         <label
@@ -234,6 +291,10 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
               outline: "none",
             }}
           />
+          <span style={{ fontSize: "12px", color: "#6b7280" }}>
+            Specify the token quantity in base units (must be a positive whole
+            integer without decimals).
+          </span>
         </label>
 
         <button
