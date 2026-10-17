@@ -2,37 +2,9 @@
 import { Page } from "@playwright/test";
 import { xdr, nativeToScVal } from "@stellar/stellar-sdk";
 
-export const MOCK_PUBLIC_KEY =
-  "GBX67B452GD67B452GD67B452GD67B452GD67B452GD67B452GD67B452";
+export const MOCK_PUBLIC_KEY = "GBX67B452GD67B452GD67B452GD67B452GD67B452GD67B452GD67B452";
 export const MOCK_SIGNED_XDR = "AAAAF_FAKE_SIGNED_XDR";
-export const MOCK_TX_HASH =
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-export const TESTNET_PASSPHRASE = "Test SDF Network ; September 2015";
-
-export interface FreighterStubOptions {
-  publicKey?: string;
-  networkPassphrase?: string;
-  connected?: boolean;
-  connectionError?: string;
-  signingError?: string;
-}
-
-interface FakeFreighterApi {
-  isConnected: () => Promise<boolean>;
-  getPublicKey: () => Promise<string>;
-  getNetworkDetails: () => Promise<{
-    networkPassphrase: string;
-    network: string;
-  }>;
-  getNetwork: () => Promise<string>;
-  signTransaction: (transactionXdr: string) => Promise<string>;
-}
-
-interface SorobanRpcRequest {
-  jsonrpc?: string;
-  id?: number | string | null;
-  method?: string;
-}
+export const MOCK_TX_HASH = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 /**
  * Installs the Freighter wallet stub script via `page.addInitScript` before navigation.
@@ -66,27 +38,13 @@ export async function installFreighterStub(
         return adapterOptions.publicKey;
       },
       getNetworkDetails: async () => ({
-        networkPassphrase: adapterOptions.networkPassphrase,
-        network:
-          adapterOptions.networkPassphrase ===
-          "Test SDF Network ; September 2015"
-            ? "TESTNET"
-            : "CUSTOM",
+        networkPassphrase: "Test SDF Network ; September 2015",
+        network: "TESTNET",
       }),
-      getNetwork: async () =>
-        adapterOptions.networkPassphrase === "Test SDF Network ; September 2015"
-          ? "TESTNET"
-          : "CUSTOM",
-      signTransaction: async (_transactionXdr: string) => {
-        if (adapterOptions.signingError)
-          throw new Error(adapterOptions.signingError);
-        return adapterOptions.signedXdr;
-      },
-    });
-
-    (window as Window & { freighter?: FakeFreighterApi }).freighter =
-      createFakeAdapter(config);
-  }, stubOptions);
+      getNetwork: async () => "TESTNET",
+      signTransaction: async (_xdr: string) => "AAAAF_FAKE_SIGNED_XDR",
+    };
+  }, publicKey);
 }
 
 export interface NetworkStubOptions {
@@ -181,39 +139,39 @@ export async function installNetworkStubs(
           result: {
             status: "SUCCESS",
             latestLedger: 100000,
-            resultXdr: 'AAAAAAAAAGQAAAAAAAAAAQAAAAAAAAAYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==',
-            resultMetaXdr: 'AAAAAQAAAAA=',
+            resultXdr: "AAAAAAAAAGQAAAAAAAAAAQAAAAAAAAAYAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+            resultMetaXdr: "AAAAAQAAAAA=",
           },
         }),
       });
     }
 
-    if (method === 'simulateTransaction') {
-      const postData = request.postData() ?? '';
-      let decodedTx = '';
+    if (method === "simulateTransaction") {
+      const postData = request.postData() ?? "";
+      let decodedTx = "";
       try {
         const txB64 = body.params?.transaction;
         if (txB64) {
-          decodedTx = Buffer.from(txB64, 'base64').toString('latin1');
+          decodedTx = Buffer.from(txB64, "base64").toString("latin1");
         }
       } catch {
         // ignore
       }
       const combined = `${postData} ${decodedTx}`;
 
-      let retvalXdr = 'AAAAAQAAAAA='; // default void / false
+      let retvalXdr = "AAAAAQAAAAA="; // default void / false
 
-      if (combined.includes('total_assets')) {
-        retvalXdr = nativeToScVal(totalAssetsVal, { type: 'i128' }).toXDR('base64');
-      } else if (combined.includes('calculate_share_price')) {
-        retvalXdr = nativeToScVal(sharePriceVal, { type: 'i128' }).toXDR('base64');
-      } else if (combined.includes('share_balance')) {
-        retvalXdr = nativeToScVal(shareBalanceVal, { type: 'i128' }).toXDR('base64');
-      } else if (combined.includes('supply')) {
-        retvalXdr = nativeToScVal(totalSharesVal, { type: 'i128' }).toXDR('base64');
-      } else if (combined.includes('balance')) {
-        retvalXdr = nativeToScVal(balanceVal, { type: 'i128' }).toXDR('base64');
-      } else if (combined.includes('has_role')) {
+      if (combined.includes("total_assets")) {
+        retvalXdr = nativeToScVal(totalAssetsVal, { type: "i128" }).toXDR("base64");
+      } else if (combined.includes("calculate_share_price")) {
+        retvalXdr = nativeToScVal(sharePriceVal, { type: "i128" }).toXDR("base64");
+      } else if (combined.includes("share_balance")) {
+        retvalXdr = nativeToScVal(shareBalanceVal, { type: "i128" }).toXDR("base64");
+      } else if (combined.includes("supply")) {
+        retvalXdr = nativeToScVal(totalSharesVal, { type: "i128" }).toXDR("base64");
+      } else if (combined.includes("balance")) {
+        retvalXdr = nativeToScVal(balanceVal, { type: "i128" }).toXDR("base64");
+      } else if (combined.includes("has_role")) {
         let granted = false;
         for (const [roleName, isGranted] of Object.entries(hasRoles)) {
           if (combined.includes(roleName) && isGranted) {
@@ -221,13 +179,13 @@ export async function installNetworkStubs(
             break;
           }
         }
-        retvalXdr = xdr.ScVal.scvBool(granted).toXDR('base64');
-      } else if (combined.includes('name')) {
-        retvalXdr = xdr.ScVal.scvString('DemoToken').toXDR('base64');
-      } else if (combined.includes('symbol')) {
-        retvalXdr = xdr.ScVal.scvString('DEMO').toXDR('base64');
-      } else if (combined.includes('decimals')) {
-        retvalXdr = xdr.ScVal.scvU32(7).toXDR('base64');
+        retvalXdr = xdr.ScVal.scvBool(granted).toXDR("base64");
+      } else if (combined.includes("name")) {
+        retvalXdr = xdr.ScVal.scvString("DemoToken").toXDR("base64");
+      } else if (combined.includes("symbol")) {
+        retvalXdr = xdr.ScVal.scvString("DEMO").toXDR("base64");
+      } else if (combined.includes("decimals")) {
+        retvalXdr = xdr.ScVal.scvU32(7).toXDR("base64");
       }
 
       return route.fulfill({
@@ -238,8 +196,8 @@ export async function installNetworkStubs(
           id,
           result: {
             latestLedger: 100000,
-            minResourceFee: '100',
-            transactionData: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+            minResourceFee: "100",
+            transactionData: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
             results: [
               {
                 auth: [],
