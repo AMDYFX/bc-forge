@@ -187,55 +187,46 @@ export async function installNetworkStubs(
       });
     }
 
-    if (method === "simulateTransaction") {
-      if (options.mintError) {
-        return route.fulfill({
-          status: 200,
-          contentType: "application/json",
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id,
-            error: { code: -32000, message: options.mintError },
-          }),
-        });
+    if (method === 'simulateTransaction') {
+      const postData = request.postData() ?? '';
+      let decodedTx = '';
+      try {
+        const txB64 = body.params?.transaction;
+        if (txB64) {
+          decodedTx = Buffer.from(txB64, 'base64').toString('latin1');
+        }
+      } catch {
+        // ignore
       }
+      const combined = `${postData} ${decodedTx}`;
 
-      const postData = request.postData() ?? "";
-      let retvalXdr = "AAAAAQAAAAA="; // default void / false
+      let retvalXdr = 'AAAAAQAAAAA='; // default void / false
 
-      if (postData.includes("total_assets")) {
-        retvalXdr = nativeToScVal(totalAssetsVal, { type: "i128" }).toXDR(
-          "base64",
-        );
-      } else if (postData.includes("calculate_share_price")) {
-        retvalXdr = nativeToScVal(sharePriceVal, { type: "i128" }).toXDR(
-          "base64",
-        );
-      } else if (postData.includes("share_balance")) {
-        retvalXdr = nativeToScVal(shareBalanceVal, { type: "i128" }).toXDR(
-          "base64",
-        );
-      } else if (postData.includes("supply")) {
-        retvalXdr = nativeToScVal(totalSharesVal, { type: "i128" }).toXDR(
-          "base64",
-        );
-      } else if (postData.includes("balance")) {
-        retvalXdr = nativeToScVal(balanceVal, { type: "i128" }).toXDR("base64");
-      } else if (postData.includes("has_role")) {
+      if (combined.includes('total_assets')) {
+        retvalXdr = nativeToScVal(totalAssetsVal, { type: 'i128' }).toXDR('base64');
+      } else if (combined.includes('calculate_share_price')) {
+        retvalXdr = nativeToScVal(sharePriceVal, { type: 'i128' }).toXDR('base64');
+      } else if (combined.includes('share_balance')) {
+        retvalXdr = nativeToScVal(shareBalanceVal, { type: 'i128' }).toXDR('base64');
+      } else if (combined.includes('supply')) {
+        retvalXdr = nativeToScVal(totalSharesVal, { type: 'i128' }).toXDR('base64');
+      } else if (combined.includes('balance')) {
+        retvalXdr = nativeToScVal(balanceVal, { type: 'i128' }).toXDR('base64');
+      } else if (combined.includes('has_role')) {
         let granted = false;
         for (const [roleName, isGranted] of Object.entries(hasRoles)) {
-          if (postData.includes(roleName) && isGranted) {
+          if (combined.includes(roleName) && isGranted) {
             granted = true;
             break;
           }
         }
-        retvalXdr = xdr.ScVal.scvBool(granted).toXDR("base64");
-      } else if (postData.includes("name")) {
-        retvalXdr = xdr.ScVal.scvString("DemoToken").toXDR("base64");
-      } else if (postData.includes("symbol")) {
-        retvalXdr = xdr.ScVal.scvString("DEMO").toXDR("base64");
-      } else if (postData.includes("decimals")) {
-        retvalXdr = xdr.ScVal.scvU32(7).toXDR("base64");
+        retvalXdr = xdr.ScVal.scvBool(granted).toXDR('base64');
+      } else if (combined.includes('name')) {
+        retvalXdr = xdr.ScVal.scvString('DemoToken').toXDR('base64');
+      } else if (combined.includes('symbol')) {
+        retvalXdr = xdr.ScVal.scvString('DEMO').toXDR('base64');
+      } else if (combined.includes('decimals')) {
+        retvalXdr = xdr.ScVal.scvU32(7).toXDR('base64');
       }
 
       return route.fulfill({
@@ -245,14 +236,21 @@ export async function installNetworkStubs(
           jsonrpc: "2.0",
           id,
           result: {
-            minResourceFee: "100",
-            transactionData: "AAAAAQAAAAE=",
+            latestLedger: 100000,
+            minResourceFee: '100',
+            transactionData: 'AAAAAQAAAAE=',
             results: [
               {
                 auth: [],
-                xdr: "AAAAAQAAAAE=",
+                xdr: 'AAAAAQAAAAE=',
+                retval: retvalXdr,
               },
             ],
+            result: {
+              auth: [],
+              retval: retvalXdr,
+              xdr: 'AAAAAQAAAAE=',
+            },
             retval: retvalXdr,
           },
         }),
