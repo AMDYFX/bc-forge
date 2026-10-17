@@ -433,4 +433,16 @@ export class MockVaultClient {
     this.allowances[from][spender] = amount;
     return { success: true, hash: 'mock-hash', returnValue: null };
   }
+
+  async extendTtl(
+    _thresholdLedgers?: number,
+    _extendToLedgers?: number,
+    _source?: unknown,
+  ): Promise<TransactionResult> {
+    return { success: true, hash: 'mock-ttl-bump-hash', returnValue: null };
+  }
+
+  async getVestingInfo(_beneficiary: string, _vestingContractId?: string): Promise<unknown[]> {
+    return [];
+  }
 }
