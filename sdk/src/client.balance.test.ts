@@ -67,6 +67,7 @@ describe('bcForgeClient read-only mode', () => {
     await expect(client.getName()).resolves.toBe('TestToken');
     await expect(client.getSymbol()).resolves.toBe('TST');
     await expect(client.getTotalSupply()).resolves.toBe(100000000n);
+    expect(client.getContractId()).toBe('CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526');
   });
 
   it('fails write operations with a typed SignerRequiredError when constructed without a wallet', async () => {
