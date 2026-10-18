@@ -50,6 +50,15 @@ const ROLE_INFO: Record<string, { description: string; permissions: string }> =
     },
   };
 
+/** Permission summary shown as the tooltip on each role badge (#1226). */
+const ROLE_PERMISSIONS: Record<string, string> = {
+  [Role.Admin]: "Admin: configures the contract and manages roles.",
+  [Role.SuperAdmin]:
+    "SuperAdmin: highest authority; grants and revokes every role.",
+  [Role.Minter]: "Minter: can mint new tokens.",
+  [Role.Pauser]: "Pauser: can pause and unpause the contract in an emergency.",
+};
+
 /** Stellar public key (G... strkey) shape check. */
 const STELLAR_ADDRESS = /^G[A-Z2-7]{55}$/;
 
@@ -314,6 +323,14 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
             <div>
               <Badge
                 data-testid={`role-badge-${role}`}
+                title={ROLE_PERMISSIONS[role]}
+                data-status={
+                  !targetValid
+                    ? undefined
+                    : roleState?.[role]
+                      ? "granted"
+                      : "not-granted"
+                }
                 variant={roleState && roleState[role] ? "success" : "default"}
               >
                 {role}:{" "}

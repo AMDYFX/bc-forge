@@ -271,4 +271,42 @@ describe("RolesScreen", () => {
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
     expect(await screen.findByText(/FAILHASH/)).toBeInTheDocument();
   });
+
+  it("explains each role permission in a badge tooltip and distinguishes granted from not granted", async () => {
+    renderWithWallet(false);
+
+    typeTarget(TARGET);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("role-badge-Minter")).toHaveTextContent(
+        "Minter: Granted",
+      );
+    });
+
+    expect(screen.getByTestId("role-badge-Minter")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/mint/i),
+    );
+    expect(screen.getByTestId("role-badge-Pauser")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/pause/i),
+    );
+    expect(screen.getByTestId("role-badge-Admin")).toHaveAttribute(
+      "title",
+      expect.any(String),
+    );
+    expect(screen.getByTestId("role-badge-SuperAdmin")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/super/i),
+    );
+    expect(screen.getByTestId("role-badge-Minter")).toHaveAttribute(
+      "data-status",
+      "granted",
+    );
+    expect(screen.getByTestId("role-badge-Admin")).toHaveAttribute(
+      "data-status",
+      "not-granted",
+    );
+  });
 });
+
