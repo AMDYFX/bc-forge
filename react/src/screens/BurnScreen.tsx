@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: MIT
-import React, { useMemo, useState } from 'react';
-import { useWallet } from '../context';
-import { useBalance, useBurn } from '../hooks';
-import { Alert } from '../components/Alert';
+import React, { useMemo, useState } from "react";
+import { useWallet } from "../context";
+import { useBalance, useBurn, useTotalSupply } from "../hooks";
+import { Alert } from "../components/Alert";
+import { ConfirmationDialog } from "../components/ConfirmationDialog";
+import {
+  TransactionHistory,
+  useSessionTransactions,
+} from "../components/TransactionHistory";
+import { parseWalletError } from "../utils";
 
 export interface BurnScreenProps {
   /** Explicit connected wallet address (takes precedence over the adapter). */
@@ -11,6 +17,8 @@ export interface BurnScreenProps {
   adapterPublicKey?: string;
   /** Formats a bigint balance for display. Defaults to plain string rendering. */
   formatBalance?: (balance: bigint) => string;
+  /** Block explorer transaction base URL used for the receipt and history links. */
+  explorerUrl?: string;
   /** Optional container style. */
   style?: React.CSSProperties;
   /** Optional container class. */
@@ -23,26 +31,54 @@ export interface BurnScreenProps {
  * Reads the connected address and balance via `useBalance` and submits via
  * `useBurn`, which signs with the connected wallet adapter configured on the
  * SDK client (no secret key field, no raw RPC transaction building here).
+ *
+ * State transitions: submitting a valid amount opens a confirmation dialog;
+ * Burn unlocks only after the acknowledgement checkbox is ticked. Confirming
+ * sends the transaction (the SDK simulates before the wallet is asked to
+ * sign). On success the destroyed amount is shown, the total supply card is
+ * decremented immediately, and balance and supply are refetched. Failures
+ * (rejected signature, revert, RPC error) surface as an alert and keep the
+ * dialog closed so the user can retry.
  */
 export const BurnScreen: React.FC<BurnScreenProps> = ({
   walletAddress,
   adapterPublicKey,
   formatBalance,
+  explorerUrl,
   style,
   className,
 }) => {
   const wallet = useWallet();
   // An explicit walletAddress overrides the provider. Otherwise the connected
   // adapter on BcForgeProvider is the source of the account.
-  const connectedAddress = walletAddress ?? wallet.publicKey ?? adapterPublicKey;
+  const connectedAddress =
+    walletAddress ?? wallet.publicKey ?? adapterPublicKey;
   const isConnected = walletAddress
     ? true
     : wallet.connected || Boolean(adapterPublicKey);
-  const { data: balance, loading: balanceLoading } = useBalance(connectedAddress);
+  const {
+    data: balance,
+    loading: balanceLoading,
+    refetch: refetchBalance,
+  } = useBalance(connectedAddress);
+  const { data: totalSupply, refetch: refetchSupply } = useTotalSupply();
   const { burn, loading: burnLoading, error: burnError } = useBurn();
+  const { transactions, record } = useSessionTransactions();
 
-  const [amountText, setAmountText] = useState('');
-  const [txHash, setTxHash] = useState<string | null>(null);
+  const [amountText, setAmountText] = useState("");
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [receipt, setReceipt] = useState<{
+    hash: string;
+    amount: bigint;
+  } | null>(null);
+  /**
+   * Optimistic supply adjustment: tokens burned against the supply snapshot
+   * `base`. It stops applying once a refetch returns a different supply.
+   */
+  const [pendingBurn, setPendingBurn] = useState<{
+    base: bigint | null;
+    amount: bigint;
+  } | null>(null);
 
   const amount = useMemo(() => {
     if (!/^\d+$/.test(amountText)) return null;
@@ -64,33 +100,71 @@ export const BurnScreen: React.FC<BurnScreenProps> = ({
     balance !== null &&
     !burnLoading;
 
-  const handleSubmit = async (event: React.FormEvent) => {
+  const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
+    if (!canSubmit) return;
+    setReceipt(null);
+    setConfirmOpen(true);
+  };
+
+  const handleConfirm = async () => {
     if (!connectedAddress || !canSubmit || amount === null) return;
-    setTxHash(null);
     try {
       // No source Keypair is passed: the SDK client signs with the connected
       // wallet adapter.
       const result = await burn(connectedAddress, amount);
-      setTxHash(result.hash);
+      setReceipt({ hash: result.hash, amount });
+      setPendingBurn((prev) => ({
+        base: totalSupply,
+        amount: (prev && prev.base === totalSupply ? prev.amount : 0n) + amount,
+      }));
+      setAmountText("");
+      record({
+        hash: result.hash,
+        operation: "burn",
+        amount: amount.toString(),
+        status: "success",
+        timestamp: Date.now(),
+      });
+      void refetchBalance();
+      void refetchSupply();
     } catch {
       // The hook already surfaced the error via `burnError`.
+    } finally {
+      setConfirmOpen(false);
     }
   };
 
-  const format = (value: bigint) => (formatBalance ? formatBalance(value) : value.toString());
+  const burnedNotYetFetched =
+    pendingBurn && pendingBurn.base === totalSupply ? pendingBurn.amount : 0n;
+  const displayedSupply =
+    totalSupply === null
+      ? null
+      : totalSupply > burnedNotYetFetched
+        ? totalSupply - burnedNotYetFetched
+        : 0n;
+
+  const format = (value: bigint) =>
+    formatBalance ? formatBalance(value) : value.toString();
 
   return (
-    <section className={className} style={{ display: 'grid', gap: 12, ...style }}>
+    <section
+      className={className}
+      style={{ display: "grid", gap: 12, ...style }}
+    >
       <div>
-        <h1 style={{ margin: '0 0 8px 0', fontSize: '24px', fontWeight: 700 }}>Burn Tokens</h1>
-        <p style={{ margin: 0, color: '#4b5563', fontSize: '14px' }}>
+        <h1 style={{ margin: "0 0 8px 0", fontSize: "24px", fontWeight: 700 }}>
+          Burn Tokens
+        </h1>
+        <p style={{ margin: 0, color: "#4b5563", fontSize: "14px" }}>
           Burn tokens from the connected wallet.
         </p>
       </div>
       <div>
         <div>Connected address</div>
-        <div data-testid="burn-connected-address">{connectedAddress ?? 'Not connected'}</div>
+        <div data-testid="burn-connected-address">
+          {connectedAddress ?? "Not connected"}
+        </div>
       </div>
 
       <div>
@@ -98,15 +172,22 @@ export const BurnScreen: React.FC<BurnScreenProps> = ({
         <div data-testid="burn-balance">
           {connectedAddress
             ? balanceLoading && balance === null
-              ? 'Loading…'
+              ? "Loading…"
               : balance !== null
                 ? format(balance)
-                : 'Unknown'
-            : '—'}
+                : "Unknown"
+            : "—"}
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 12 }}>
+      <div>
+        <div>Total supply</div>
+        <div data-testid="burn-total-supply">
+          {displayedSupply !== null ? format(displayedSupply) : "Unknown"}
+        </div>
+      </div>
+
+      <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12 }}>
         <label htmlFor="burn-amount">Amount</label>
         <input
           id="burn-amount"
@@ -126,20 +207,49 @@ export const BurnScreen: React.FC<BurnScreenProps> = ({
 
         {burnError ? (
           <Alert variant="danger" title="Burn failed" data-testid="burn-error">
-            {burnError.message}
+            {parseWalletError(burnError)}
           </Alert>
         ) : null}
 
-        {txHash ? (
+        {receipt ? (
           <Alert variant="success" title="Burned" data-testid="burn-success">
-            Transaction hash: {txHash}
+            Destroyed {format(receipt.amount)} tokens. Transaction hash:{" "}
+            {explorerUrl ? (
+              <a
+                href={`${explorerUrl.replace(/\/+$/, "")}/${receipt.hash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {receipt.hash}
+              </a>
+            ) : (
+              receipt.hash
+            )}
           </Alert>
         ) : null}
 
         <button type="submit" disabled={!canSubmit} data-testid="burn-submit">
-          {burnLoading ? 'Burning…' : 'Burn'}
+          {burnLoading ? "Burning…" : "Burn"}
         </button>
       </form>
+
+      <ConfirmationDialog
+        open={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={() => void handleConfirm()}
+        title="Burn tokens permanently?"
+        description={`You are about to burn ${amount !== null ? format(amount) : ""} tokens from ${connectedAddress ?? ""}.`}
+        confirmLabel="Burn"
+        busyLabel="Burning…"
+        busy={burnLoading}
+        confirmationMode="checkbox"
+        confirmationLabel="I understand this action permanently destroys tokens"
+      />
+
+      <TransactionHistory
+        transactions={transactions}
+        explorerUrl={explorerUrl}
+      />
     </section>
   );
 };
