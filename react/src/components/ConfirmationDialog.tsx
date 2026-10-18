@@ -409,14 +409,14 @@ const ConfirmationDialogBody: React.FC<ConfirmationDialogBodyProps> = ({
     if (!panel) return;
 
     const focusable = getFocusableElements(panel);
-    if (focusable.length === 0) {
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (first === undefined || last === undefined) {
       event.preventDefault();
       panel.focus();
       return;
     }
 
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
     const active = document.activeElement;
 
     if (event.shiftKey && (active === first || active === panel)) {
