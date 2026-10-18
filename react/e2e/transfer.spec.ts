@@ -11,7 +11,7 @@ test.describe('Transfer Tokens flow', () => {
     await page.getByTestId('connect-freighter').click();
     await expect(page.getByTestId('connected-wallet')).toBeVisible();
 
-    await page.goto('/#/transfer');
+    await page.getByTestId('nav-transfer').click();
 
     // Heading assertion - must fail if missing
     await expect(page.getByRole('heading', { name: 'Transfer Tokens' })).toBeVisible();
@@ -38,7 +38,7 @@ test.describe('Transfer Tokens flow', () => {
     await page.getByTestId('connect-freighter').click();
     await expect(page.getByTestId('connected-wallet')).toBeVisible();
 
-    await page.goto('/#/transfer');
+    await page.getByTestId('nav-transfer').click();
 
     await expect(page.getByRole('heading', { name: 'Transfer Tokens' })).toBeVisible();
 
