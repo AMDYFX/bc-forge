@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { VaultClient, calculateApy } from "@bc-forge/sdk";
-import type { ApyResult, WalletAdapter } from "@bc-forge/sdk";
-import { Alert } from "../components/Alert";
-import { isPositiveInteger } from "../utils";
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { VaultClient, calculateApy } from '@bc-forge/sdk';
+import type { ApyResult, WalletAdapter } from '@bc-forge/sdk';
+import { Alert } from '../components/Alert';
+import { useOptionalBcForgeClient } from '../context';
+import { isPositiveInteger } from '../utils';
 
 export interface VaultsScreenProps {
   /** Optional pre-instantiated VaultClient instance */
@@ -53,10 +54,12 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingMetrics, setIsLoadingMetrics] = useState(false);
 
+  const contextClient = useOptionalBcForgeClient();
+  const effectiveAdapter = walletAdapter ?? (contextClient as any)?.getWalletAdapter?.();
   const connectedAddress =
     walletAddress ||
-    (walletAdapter?.connected ? walletAdapter.publicKey : undefined) ||
-    walletAdapter?.publicKey;
+    (effectiveAdapter?.connected ? effectiveAdapter.publicKey : undefined) ||
+    effectiveAdapter?.publicKey;
 
   const isConnected = Boolean(connectedAddress);
 
