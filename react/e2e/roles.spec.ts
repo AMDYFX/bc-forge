@@ -20,7 +20,7 @@ test.describe('Role Management flow', () => {
     await page.getByTestId('connect-freighter').click();
     await expect(page.getByTestId('connected-wallet')).toBeVisible();
 
-    await page.goto('/#/roles');
+    await page.getByTestId('nav-roles').click();
 
     // Heading assertion - must fail if missing
     await expect(page.getByRole('heading', { name: 'Role Management' })).toBeVisible();
