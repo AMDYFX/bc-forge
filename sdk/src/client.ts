@@ -977,6 +977,41 @@ export class bcForgeClient {
   }
 
   /**
+   * Pre-flight a transfer: simulates it without submitting and returns the
+   * estimated resource fee in stroops.
+   *
+   * @param from - Sender address (also the simulation source)
+   * @param to - Recipient address
+   * @param amount - Number of tokens
+   */
+  async estimateTransferFee(from: string, to: string, amount: bigint): Promise<DryRunResult> {
+    return this.dryRun(
+      'transfer',
+      [addressToScVal(from), addressToScVal(to), i128ToScVal(amount)],
+      from,
+    );
+  }
+
+  /**
+   * Check whether a recipient can receive tokens. Contract (`C...`) addresses
+   * are assumed to exist; account (`G...`) addresses are looked up on the RPC
+   * server. Returns `false` when the account is not found.
+   *
+   * @param address - Stellar account or contract address
+   */
+  async accountExists(address: string): Promise<boolean> {
+    if (address.startsWith('C')) return true;
+    try {
+      await this.server.getAccount(address);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/not found|404/i.test(message)) return false;
+      throw err;
+    }
+  }
+
+  /**
    * Simulate a mint operation.
    *
    * @param to - Recipient address

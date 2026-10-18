@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-import React, { useState } from 'react';
-import { useMint, useWallet } from '../hooks';
-import { truncatePublicKey } from '../context';
-import { isPositiveInteger } from '../utils';
-import { Alert } from '../components/Alert';
+import React, { useState } from "react";
+import { Role } from "@bc-forge/sdk";
+import { useHasRole, useMint, useWallet } from "../hooks";
+import { truncatePublicKey } from "../context";
+import { isPositiveInteger } from "../utils";
+import { Alert } from "../components/Alert";
 
 export interface MintScreenProps {
   /** Optional container style */
@@ -20,9 +21,13 @@ export interface MintScreenProps {
 export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
   const { publicKey, connected } = useWallet();
   const { mint, loading } = useMint();
+  const { data: isMinter, loading: roleLoading } = useHasRole(
+    Role.Minter,
+    connected ? (publicKey ?? undefined) : undefined,
+  );
 
-  const [recipient, setRecipient] = useState('');
-  const [amount, setAmount] = useState('');
+  const [recipient, setRecipient] = useState("");
+  const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
 
@@ -30,7 +35,14 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
   const trimmedAmount = amount.trim();
   const recipientValid = trimmedRecipient.length > 0;
   const amountValid = isPositiveInteger(trimmedAmount);
-  const canSubmit = connected && recipientValid && amountValid && !loading;
+  const lacksMinterRole = connected && isMinter === false;
+  const canSubmit =
+    connected &&
+    recipientValid &&
+    amountValid &&
+    !loading &&
+    !roleLoading &&
+    !lacksMinterRole;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,15 +50,19 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
     setTxHash(null);
 
     if (!connected) {
-      setError('Connect a wallet before minting.');
+      setError("Connect a wallet before minting.");
+      return;
+    }
+    if (lacksMinterRole) {
+      setError("Minter role required to mint tokens.");
       return;
     }
     if (!recipientValid) {
-      setError('Recipient address is required.');
+      setError("Recipient address is required.");
       return;
     }
     if (!amountValid) {
-      setError('Amount must be a positive integer.');
+      setError("Amount must be a positive integer.");
       return;
     }
 
@@ -55,7 +71,7 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
       const result = await mint(trimmedRecipient, BigInt(trimmedAmount));
       if (result.success) {
         setTxHash(result.hash);
-        setAmount('');
+        setAmount("");
       } else {
         setError(`Mint failed with transaction hash: ${result.hash}`);
       }
@@ -69,29 +85,47 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
       className={className}
       data-testid="mint-screen"
       style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '24px',
-        padding: '24px',
-        maxWidth: '800px',
-        margin: '0 auto',
-        fontFamily: 'inherit',
+        display: "flex",
+        flexDirection: "column",
+        gap: "24px",
+        padding: "24px",
+        maxWidth: "800px",
+        margin: "0 auto",
+        fontFamily: "inherit",
         ...style,
       }}
     >
       <div>
-        <h1 style={{ margin: '0 0 8px 0', fontSize: '24px', fontWeight: 700 }}>Mint Tokens</h1>
-        <p style={{ margin: 0, color: '#4b5563', fontSize: '14px' }}>
+        <h1 style={{ margin: "0 0 8px 0", fontSize: "24px", fontWeight: 700 }}>
+          Mint Tokens
+        </h1>
+        <p style={{ margin: 0, color: "#4b5563", fontSize: "14px" }}>
           Mint tokens to a recipient through the connected wallet.
         </p>
       </div>
 
-      <div style={{ fontSize: '14px', color: '#4b5563' }}>
-        Signing account:{' '}
-        <span data-testid="mint-connected-account" style={{ fontFamily: 'monospace' }}>
-          {connected && publicKey ? truncatePublicKey(publicKey) : 'Not connected'}
+      <div style={{ fontSize: "14px", color: "#4b5563" }}>
+        Signing account:{" "}
+        <span
+          data-testid="mint-connected-account"
+          style={{ fontFamily: "monospace" }}
+        >
+          {connected && publicKey
+            ? truncatePublicKey(publicKey)
+            : "Not connected"}
         </span>
       </div>
+
+      {lacksMinterRole && (
+        <Alert
+          variant="warning"
+          title="Minter role required"
+          data-testid="mint-role-warning"
+        >
+          The connected account does not hold the Minter role, so minting is
+          disabled.
+        </Alert>
+      )}
 
       {error && (
         <Alert variant="danger" title="Error" onDismiss={() => setError(null)}>
@@ -100,7 +134,11 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
       )}
 
       {txHash && (
-        <Alert variant="success" title="Mint Success" onDismiss={() => setTxHash(null)}>
+        <Alert
+          variant="success"
+          title="Mint Success"
+          onDismiss={() => setTxHash(null)}
+        >
           Transaction confirmed: <code data-testid="tx-hash">{txHash}</code>
         </Alert>
       )}
@@ -109,16 +147,23 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
         onSubmit={handleSubmit}
         data-testid="mint-form"
         style={{
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '12px',
-          padding: '20px',
-          border: '1px solid #e5e7eb',
-          borderRadius: '8px',
-          backgroundColor: '#ffffff',
+          display: "flex",
+          flexDirection: "column",
+          gap: "12px",
+          padding: "20px",
+          border: "1px solid #e5e7eb",
+          borderRadius: "8px",
+          backgroundColor: "#ffffff",
         }}
       >
-        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '14px' }}>
+        <label
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "6px",
+            fontSize: "14px",
+          }}
+        >
           Recipient address
           <input
             type="text"
@@ -128,16 +173,23 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
             onChange={(e) => setRecipient(e.target.value)}
             disabled={loading}
             style={{
-              padding: '8px 12px',
-              border: '1px solid #d1d5db',
-              borderRadius: '6px',
-              fontSize: '14px',
-              outline: 'none',
+              padding: "8px 12px",
+              border: "1px solid #d1d5db",
+              borderRadius: "6px",
+              fontSize: "14px",
+              outline: "none",
             }}
           />
         </label>
 
-        <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '14px' }}>
+        <label
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "6px",
+            fontSize: "14px",
+          }}
+        >
           Amount
           <input
             type="text"
@@ -147,11 +199,11 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
             onChange={(e) => setAmount(e.target.value)}
             disabled={loading}
             style={{
-              padding: '8px 12px',
-              border: '1px solid #d1d5db',
-              borderRadius: '6px',
-              fontSize: '14px',
-              outline: 'none',
+              padding: "8px 12px",
+              border: "1px solid #d1d5db",
+              borderRadius: "6px",
+              fontSize: "14px",
+              outline: "none",
             }}
           />
         </label>
@@ -160,16 +212,16 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
           type="submit"
           disabled={!canSubmit}
           style={{
-            padding: '10px 16px',
-            backgroundColor: !canSubmit ? '#9ca3af' : '#2563eb',
-            color: '#ffffff',
-            border: 'none',
-            borderRadius: '6px',
+            padding: "10px 16px",
+            backgroundColor: !canSubmit ? "#9ca3af" : "#2563eb",
+            color: "#ffffff",
+            border: "none",
+            borderRadius: "6px",
             fontWeight: 500,
-            cursor: !canSubmit ? 'not-allowed' : 'pointer',
+            cursor: !canSubmit ? "not-allowed" : "pointer",
           }}
         >
-          {loading ? 'Minting…' : 'Mint'}
+          {loading ? "Minting…" : "Mint"}
         </button>
       </form>
     </div>
