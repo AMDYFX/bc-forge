@@ -223,7 +223,7 @@ export async function installNetworkStubs(
       } catch {
         // Fallback
       }
-      let retvalXdr = 'AAAAAQAAAAA='; // default void / false
+      let retvalXdr = 'AAAAAQ=='; // default void (xdr.ScVal.scvVoid())
 
       if (callData.includes('total_assets')) {
         retvalXdr = nativeToScVal(totalAssetsVal, { type: 'i128' }).toXDR('base64');
