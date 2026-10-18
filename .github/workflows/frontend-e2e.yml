@@ -70,6 +70,7 @@ jobs:
         working-directory: react
         env:
           CI: 'true'
+          VITE_WALLET_ADDRESS: 'GBX6IWES6LXR37NISD3DKBJSSWEGGY6UB5PSL3UVTJEZRIJ4GUPJAWVE'
         run: npm run e2e
 
       - name: Upload Playwright report on failure
