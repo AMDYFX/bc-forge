@@ -16,7 +16,7 @@ test.describe('Vaults Dashboard flow', () => {
     await page.getByTestId('connect-freighter').click();
     await expect(page.getByTestId('connected-wallet')).toBeVisible();
 
-    await page.goto('/#/vaults');
+    await page.getByTestId('nav-vaults').click();
 
     // Heading assertion - must fail if missing
     await expect(page.getByRole('heading', { name: 'Vaults Dashboard' })).toBeVisible();
@@ -57,7 +57,7 @@ test.describe('Vaults Dashboard flow', () => {
     await page.getByTestId('connect-freighter').click();
     await expect(page.getByTestId('connected-wallet')).toBeVisible();
 
-    await page.goto('/#/vaults');
+    await page.getByTestId('nav-vaults').click();
 
     await expect(page.getByRole('heading', { name: 'Vaults Dashboard' })).toBeVisible();
 
