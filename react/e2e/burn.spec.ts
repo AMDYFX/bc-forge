@@ -11,7 +11,7 @@ test.describe('Burn Tokens flow', () => {
     await page.getByTestId('connect-freighter').click();
     await expect(page.getByTestId('connected-wallet')).toBeVisible();
 
-    await page.goto('/#/burn');
+    await page.getByTestId('nav-burn').click();
 
     // Heading assertion - must fail if missing
     await expect(page.getByRole('heading', { name: 'Burn Tokens' })).toBeVisible();
@@ -37,7 +37,7 @@ test.describe('Burn Tokens flow', () => {
     await page.getByTestId('connect-freighter').click();
     await expect(page.getByTestId('connected-wallet')).toBeVisible();
 
-    await page.goto('/#/burn');
+    await page.getByTestId('nav-burn').click();
 
     await expect(page.getByRole('heading', { name: 'Burn Tokens' })).toBeVisible();
 
