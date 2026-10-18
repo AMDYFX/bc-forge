@@ -30,6 +30,10 @@ const mockClient = {
   estimateTransferFee: jest.fn(),
   accountExists: jest.fn(),
   extendTtl: jest.fn(),
+  getEvents: jest.fn(),
+  getAccountSequence: jest.fn(),
+  getContractTtl: jest.fn(),
+  getRateLimitStatus: jest.fn(),
   getFlashLoanLockStatus: jest.fn(),
   getSplitInvoice: jest.fn(),
   getVestingInfo: jest.fn(),
@@ -82,6 +86,10 @@ import {
   useBatchContractReads,
   useEstimateFee,
   useExtendContractTtl,
+  useContractEvents,
+  useAccountSequence,
+  useContractTtl,
+  useRateLimitStatus,
   useFlashLoanGuardStatus,
   useSplitRecipientShares,
   useHasRole,
@@ -1657,6 +1665,315 @@ describe("useFlashLoanGuardStatus (#1201)", () => {
       await waitFor(() => expect(result.current.loading).toBe(false));
       expect(result.current.error).toBeDefined();
       expect(result.current.recipients).toEqual([]);
+    });
+  });
+describe("useContractEvents (#1195)", () => {
+    const sampleEvents = [
+      {
+        id: "1",
+        type: "contract",
+        ledger: 100,
+        topic: ["transfer", "alice", "bob"],
+        value: "100",
+      },
+      {
+        id: "2",
+        type: "contract",
+        ledger: 101,
+        topic: ["mint", "admin", "alice"],
+        value: "50",
+      },
+      {
+        id: "3",
+        type: "contract",
+        ledger: 102,
+        topic: ["burn", "bob"],
+        value: "25",
+      },
+      {
+        id: "4",
+        type: "contract",
+        ledger: 103,
+        topic: ["role_granted", "operator"],
+        value: "1",
+      },
+    ];
+
+    it("fetches and filters events by topic", async () => {
+      mockClient.getEvents.mockResolvedValue(sampleEvents);
+
+      const { result } = renderHook(() =>
+        useContractEvents({ topics: ["transfer", "burn"] }),
+      );
+
+      expect(result.current.loading).toBe(true);
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.events).toHaveLength(2);
+      expect(result.current.events[0].id).toBe("1");
+      expect(result.current.events[1].id).toBe("3");
+      expect(result.current.error).toBeNull();
+    });
+
+    it("limits the number of returned events according to limit option", async () => {
+      mockClient.getEvents.mockResolvedValue(sampleEvents);
+
+      const { result } = renderHook(() => useContractEvents({ limit: 2 }));
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.events).toHaveLength(2);
+      expect(result.current.events[0].id).toBe("1");
+      expect(result.current.events[1].id).toBe("2");
+    });
+
+    it("handles error during event fetch", async () => {
+      mockClient.getEvents.mockRejectedValue(new Error("RPC network timeout"));
+
+      const { result } = renderHook(() => useContractEvents());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.error).toBeInstanceOf(Error);
+      expect(result.current.error?.message).toBe("RPC network timeout");
+      expect(result.current.events).toEqual([]);
+    });
+
+    it("supports manual refetch", async () => {
+      mockClient.getEvents
+        .mockResolvedValueOnce([sampleEvents[0]])
+        .mockResolvedValueOnce(sampleEvents);
+
+      const { result } = renderHook(() => useContractEvents());
+
+      await waitFor(() => {
+        expect(result.current.events).toHaveLength(1);
+      });
+
+      await act(async () => {
+        await result.current.refetch();
+      });
+
+      expect(result.current.events).toHaveLength(4);
+      expect(mockClient.getEvents).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe("useAccountSequence (#1196)", () => {
+    it("fetches current account sequence and computes nextSequence", async () => {
+      mockClient.getAccountSequence.mockResolvedValue("12345");
+
+      const { result } = renderHook(() => useAccountSequence("GACCOUNT123"));
+
+      expect(result.current.loading).toBe(true);
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.sequence).toBe(12345n);
+      expect(result.current.nextSequence).toBe(12346n);
+      expect(result.current.error).toBeNull();
+    });
+
+    it("optimistically increments sequence", async () => {
+      mockClient.getAccountSequence.mockResolvedValue("100");
+
+      const { result } = renderHook(() => useAccountSequence("GACCOUNT123"));
+
+      await waitFor(() => {
+        expect(result.current.sequence).toBe(100n);
+      });
+
+      let nextSeq: bigint | null = null;
+      act(() => {
+        nextSeq = result.current.incrementSequence();
+      });
+
+      expect(nextSeq).toBe(101n);
+      expect(result.current.sequence).toBe(101n);
+      expect(result.current.nextSequence).toBe(102n);
+    });
+
+    it("handles sequence mismatch recovery", async () => {
+      mockClient.getAccountSequence
+        .mockResolvedValueOnce("200")
+        .mockResolvedValueOnce("250");
+
+      const { result } = renderHook(() => useAccountSequence("GACCOUNT123"));
+
+      await waitFor(() => {
+        expect(result.current.sequence).toBe(200n);
+      });
+
+      await act(async () => {
+        await result.current.handleSequenceMismatch();
+      });
+
+      expect(result.current.sequence).toBe(250n);
+      expect(result.current.nextSequence).toBe(251n);
+    });
+
+    it("handles error during sequence lookup", async () => {
+      mockClient.getAccountSequence.mockRejectedValue(
+        new Error("Account not found"),
+      );
+
+      const { result } = renderHook(() => useAccountSequence("GUNKNOWN"));
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.error).toBeInstanceOf(Error);
+      expect(result.current.error?.message).toBe("Account not found");
+      expect(result.current.sequence).toBeNull();
+      expect(result.current.nextSequence).toBeNull();
+    });
+  });
+
+  describe("useContractTtl (#1197)", () => {
+    it("fetches TTL data and flags low TTL warning when threshold reached", async () => {
+      mockClient.getContractTtl.mockResolvedValue({
+        currentLedger: 1000,
+        liveUntilLedgerSeq: 1040,
+        ledgersRemaining: 40,
+      });
+
+      const { result } = renderHook(() =>
+        useContractTtl({ warningThresholdLedgers: 50 }),
+      );
+
+      expect(result.current.loading).toBe(true);
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.data).toEqual({
+        contractId: "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        currentLedger: 1000,
+        liveUntilLedgerSeq: 1040,
+        ledgersRemaining: 40,
+        isLowTtl: true,
+        threshold: 50,
+      });
+      expect(result.current.isLowTtl).toBe(true);
+      expect(result.current.error).toBeNull();
+    });
+
+    it("sets isLowTtl false when remaining ledgers exceed threshold", async () => {
+      mockClient.getContractTtl.mockResolvedValue({
+        currentLedger: 1000,
+        liveUntilLedgerSeq: 1500,
+        ledgersRemaining: 500,
+      });
+
+      const { result } = renderHook(() =>
+        useContractTtl({ warningThresholdLedgers: 50 }),
+      );
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.isLowTtl).toBe(false);
+    });
+
+    it("handles error during contract TTL lookup", async () => {
+      mockClient.getContractTtl.mockRejectedValue(
+        new Error("Contract not found"),
+      );
+
+      const { result } = renderHook(() => useContractTtl());
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.error?.message).toBe("Contract not found");
+      expect(result.current.data).toBeNull();
+      expect(result.current.isLowTtl).toBe(false);
+    });
+  });
+
+  describe("useRateLimitStatus (#1199)", () => {
+    it("fetches rate limit status and reflects usage and quota", async () => {
+      mockClient.getRateLimitStatus.mockResolvedValue({
+        limit: 100n,
+        windowSeconds: 3600n,
+        currentUsage: 25n,
+        remainingQuota: 75n,
+        cooldownSeconds: 0n,
+        isThrottled: false,
+      });
+
+      const { result } = renderHook(() =>
+        useRateLimitStatus({ address: "GUSER123" }),
+      );
+
+      expect(result.current.loading).toBe(true);
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.data?.limit).toBe(100n);
+      expect(result.current.data?.currentUsage).toBe(25n);
+      expect(result.current.data?.remainingQuota).toBe(75n);
+      expect(result.current.data?.cooldownSeconds).toBe(0n);
+      expect(result.current.isThrottled).toBe(false);
+      expect(result.current.error).toBeNull();
+    });
+
+    it("identifies throttled state correctly", async () => {
+      mockClient.getRateLimitStatus.mockResolvedValue({
+        limit: 100n,
+        windowSeconds: 3600n,
+        currentUsage: 100n,
+        remainingQuota: 0n,
+        cooldownSeconds: 45n,
+        isThrottled: true,
+      });
+
+      const { result } = renderHook(() =>
+        useRateLimitStatus({ address: "GUSER123", operation: "mint" }),
+      );
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.isThrottled).toBe(true);
+      expect(result.current.data?.remainingQuota).toBe(0n);
+      expect(result.current.data?.cooldownSeconds).toBe(45n);
+    });
+
+    it("handles error in rate limit status lookup", async () => {
+      mockClient.getRateLimitStatus.mockRejectedValue(
+        new Error("Rate limit store unavailable"),
+      );
+
+      const { result } = renderHook(() =>
+        useRateLimitStatus({ address: "GUSER123" }),
+      );
+
+      await waitFor(() => {
+        expect(result.current.loading).toBe(false);
+      });
+
+      expect(result.current.error?.message).toBe(
+        "Rate limit store unavailable",
+      );
+      expect(result.current.data).toBeNull();
+      expect(result.current.isThrottled).toBe(false);
     });
   });
 });

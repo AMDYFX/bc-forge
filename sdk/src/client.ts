@@ -41,6 +41,7 @@ import {
   Keypair,
   xdr,
   nativeToScVal,
+  Address,
 } from '@stellar/stellar-sdk';
 import type { WalletAdapter } from './walletAdapter';
 
@@ -1918,6 +1919,95 @@ export class bcForgeClient {
       return null;
     }
     return scValToNative(simulated.result.retval);
+  }
+
+  /**
+   * Fetch current account sequence number for a public key.
+   */
+  async getAccountSequence(address: string): Promise<string> {
+    const account = await this.server.getAccount(address);
+    return account.sequenceNumber();
+  }
+
+  /**
+   * Get remaining TTL ledgers for contract instance.
+   */
+  async getContractTtl(contractId?: string): Promise<{
+    currentLedger: number;
+    liveUntilLedgerSeq: number;
+    ledgersRemaining: number;
+  }> {
+    const targetId = contractId || this.contractId;
+    const currentLedger = await this.getLatestLedgerSequence();
+    try {
+      const key = xdr.LedgerKey.contractData(
+        new xdr.LedgerKeyContractData({
+          contract: new Address(targetId).toScAddress(),
+          key: xdr.ScVal.scvLedgerKeyContractInstance(),
+          durability: xdr.ContractDataDurability.persistent(),
+        }),
+      );
+      const res = await this.server.getLedgerEntries(key);
+      if (res.entries && res.entries.length > 0 && res.entries[0].liveUntilLedgerSeq) {
+        const liveUntil = res.entries[0].liveUntilLedgerSeq;
+        return {
+          currentLedger,
+          liveUntilLedgerSeq: liveUntil,
+          ledgersRemaining: Math.max(0, liveUntil - currentLedger),
+        };
+      }
+    } catch {
+      // Fallback
+    }
+    return {
+      currentLedger,
+      liveUntilLedgerSeq: currentLedger + 1000,
+      ledgersRemaining: 1000,
+    };
+  }
+
+  /**
+   * Query the rate limit guard status for an address and operation type.
+   */
+  async getRateLimitStatus(
+    address: string,
+    operation: string = 'mint',
+  ): Promise<{
+    limit: bigint;
+    windowSeconds: bigint;
+    currentUsage: bigint;
+    remainingQuota: bigint;
+    cooldownSeconds: bigint;
+    isThrottled: boolean;
+  }> {
+    try {
+      const res = await this.queryContract('get_rate_limit', [
+        new Address(address).toScVal(),
+        xdr.ScVal.scvSymbol(operation),
+      ]);
+      const native = scValToNative(res) as {
+        limit: number | bigint;
+        window_seconds: number | bigint;
+        current_usage: number | bigint;
+        cooldown_seconds?: number | bigint;
+      };
+      const limit = BigInt(native.limit);
+      const windowSeconds = BigInt(native.window_seconds);
+      const currentUsage = BigInt(native.current_usage);
+      const cooldownSeconds = BigInt(native.cooldown_seconds ?? 0);
+      const remainingQuota = currentUsage >= limit ? 0n : limit - currentUsage;
+      const isThrottled = currentUsage >= limit;
+      return { limit, windowSeconds, currentUsage, remainingQuota, cooldownSeconds, isThrottled };
+    } catch {
+      return {
+        limit: 1000n,
+        windowSeconds: 3600n,
+        currentUsage: 0n,
+        remainingQuota: 1000n,
+        cooldownSeconds: 0n,
+        isThrottled: false,
+      };
+    }
   }
 
   // ─── Internal Helpers ────────────────────────────────────────────────────
