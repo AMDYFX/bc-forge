@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import "@testing-library/jest-dom";
+import React from "react";
 import {
   act,
   render,
@@ -28,6 +29,7 @@ describe("VaultsScreen", () => {
       getTotalSupply: jest.fn().mockResolvedValue(500000n),
       calculateSharePrice: jest.fn().mockResolvedValue(2n),
       getShareBalance: jest.fn().mockResolvedValue(100n),
+      getUnderlyingBalance: jest.fn().mockResolvedValue(1000n),
       deposit: jest.fn().mockResolvedValue({
         success: true,
         hash: "0xabc123deposit",
@@ -120,6 +122,10 @@ describe("VaultsScreen", () => {
     expect(mockClient.getShareBalance).toHaveBeenCalledWith(
       mockAdapter.publicKey,
     );
+    expect(mockClient.getUnderlyingBalance).toHaveBeenCalledWith(
+      mockAdapter.publicKey,
+    );
+    expect(screen.getByTestId("token-balance")).toHaveTextContent("1000");
   });
 
   it("refreshes vault metrics every 30 seconds", async () => {
@@ -134,6 +140,37 @@ describe("VaultsScreen", () => {
 
     unmount();
     jest.useRealTimers();
+  });
+
+  it("disables deposits above the connected wallet token balance", async () => {
+    (calculateApy as jest.Mock).mockResolvedValue(null);
+    render(<VaultsScreen client={mockClient} walletAdapter={mockAdapter} />);
+
+    const input = screen.getByPlaceholderText(/enter positive integer amount/i);
+    const submit = screen.getByRole("button", { name: /^deposit$/i });
+    await waitFor(() =>
+      expect(screen.getByTestId("token-balance")).toHaveTextContent("1000"),
+    );
+
+    fireEvent.change(input, { target: { value: "1001" } });
+    expect(submit).toBeDisabled();
+    fireEvent.change(input, { target: { value: "1000" } });
+    expect(submit).toBeEnabled();
+  });
+
+  it("reports token balance lookup failures and keeps deposits disabled", async () => {
+    mockClient.getUnderlyingBalance.mockRejectedValueOnce(
+      new Error("RPC unavailable"),
+    );
+    render(<VaultsScreen client={mockClient} walletAdapter={mockAdapter} />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to load token balance: RPC unavailable",
+    );
+    expect(screen.getByTestId("token-balance")).toHaveTextContent(
+      "Unavailable",
+    );
+    expect(screen.getByRole("button", { name: /^deposit$/i })).toBeDisabled();
   });
 
   it("disables deposit and withdraw forms when no wallet is connected", async () => {
@@ -276,6 +313,10 @@ describe("VaultsScreen", () => {
   it("shows an error Alert when trying to deposit non-positive or invalid amounts", async () => {
     render(<VaultsScreen client={mockClient} walletAdapter={mockAdapter} />);
 
+    await waitFor(() =>
+      expect(screen.getByTestId("token-balance")).toHaveTextContent("1000"),
+    );
+
     const depositInput = screen.getByPlaceholderText(
       /enter positive integer amount/i,
     );
@@ -310,6 +351,10 @@ describe("VaultsScreen", () => {
     );
 
     render(<VaultsScreen client={mockClient} walletAdapter={mockAdapter} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("token-balance")).toHaveTextContent("1000"),
+    );
 
     const depositInput = screen.getByPlaceholderText(
       /enter positive integer amount/i,

@@ -139,6 +139,13 @@ export class VaultClient {
     return scValToNative(result) as string;
   }
 
+  /** Get an address's balance of the vault's underlying token. */
+  async getUnderlyingBalance(address: string): Promise<bigint> {
+    const tokenContract = new Contract(await this.getUnderlyingToken());
+    const result = await this.queryContract('balance', [addressToScVal(address)], tokenContract);
+    return BigInt(scValToNative(result) as string | number | bigint);
+  }
+
   /**
    * Get the human-readable vault share token name.
    */
@@ -529,7 +536,11 @@ export class VaultClient {
     throw lastError;
   }
 
-  private async queryContract(method: string, args: xdr.ScVal[]): Promise<xdr.ScVal> {
+  private async queryContract(
+    method: string,
+    args: xdr.ScVal[],
+    contract: Contract = this.contract,
+  ): Promise<xdr.ScVal> {
     return this.withRetry(async () => {
       try {
         const account = new (await import('@stellar/stellar-sdk')).Account(
@@ -541,7 +552,7 @@ export class VaultClient {
           fee: '100',
           networkPassphrase: this.networkPassphrase,
         })
-          .addOperation(this.contract.call(method, ...args))
+          .addOperation(contract.call(method, ...args))
           .setTimeout(30)
           .build();
 

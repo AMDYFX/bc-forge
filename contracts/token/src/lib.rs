@@ -912,6 +912,11 @@ impl BcForgeToken {
         Ok(())
     }
 
+    /// Returns whether token operations are currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        bc_forge_lifecycle::is_paused(&env)
+    }
+
     /// Pauses the contract.
     ///
     /// @notice Pauses all token operations. Only the admin (or SuperAdmin/Pauser role holder) can call this function.

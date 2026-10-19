@@ -71,6 +71,7 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   const [totalShares, setTotalShares] = useState<bigint | null>(null);
   const [sharePrice, setSharePrice] = useState<bigint | null>(null);
   const [shareBalance, setShareBalance] = useState<bigint | null>(null);
+  const [tokenBalance, setTokenBalance] = useState<bigint | null>(null);
   const [apyResult, setApyResult] = useState<ApyResult | null>(null);
 
   const [depositAmount, setDepositAmount] = useState("");
@@ -105,6 +106,11 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   const parsedDepositAmount = isPositiveInteger(depositAmount)
     ? BigInt(depositAmount.trim())
     : null;
+  const depositDisabled =
+    !isConnected ||
+    isSubmitting ||
+    tokenBalance === null ||
+    (parsedDepositAmount !== null && parsedDepositAmount > tokenBalance);
   const estimatedDepositShares =
     parsedDepositAmount === null
       ? null
@@ -162,12 +168,19 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       setSharePrice(price);
 
       if (connectedAddress) {
-        const balance = await activeClient
-          .getShareBalance(connectedAddress)
-          .catch(() => 0n);
-        setShareBalance(balance);
+        const [shares, tokens] = await Promise.all([
+          activeClient.getShareBalance(connectedAddress).catch(() => 0n),
+          activeClient.getUnderlyingBalance(connectedAddress).catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            setError(`Unable to load token balance: ${message}`);
+            return null;
+          }),
+        ]);
+        setShareBalance(shares);
+        setTokenBalance(tokens);
       } else {
         setShareBalance(null);
+        setTokenBalance(null);
       }
 
       if (activeRpcUrl && activePassphrase && activeContractId) {
@@ -675,18 +688,30 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
               ? "Enter an amount to preview shares."
               : `Estimated shares: ${estimatedDepositShares.toString()}`}
           </div>
+          <div
+            data-testid="token-balance"
+            style={{ fontSize: "13px", color: "#4b5563" }}
+          >
+            Token balance:{" "}
+            {tokenBalance === null
+              ? isConnected
+                ? isLoadingMetrics
+                  ? "Loading..."
+                  : "Unavailable"
+                : "Disconnected"
+              : tokenBalance.toString()}
+          </div>
           <button
             type="submit"
-            disabled={!isConnected || isSubmitting}
+            disabled={depositDisabled}
             style={{
               padding: "10px 16px",
-              backgroundColor:
-                !isConnected || isSubmitting ? "#9ca3af" : "#2563eb",
+              backgroundColor: depositDisabled ? "#9ca3af" : "#2563eb",
               color: "#ffffff",
               border: "none",
               borderRadius: "6px",
               fontWeight: 500,
-              cursor: !isConnected || isSubmitting ? "not-allowed" : "pointer",
+              cursor: depositDisabled ? "not-allowed" : "pointer",
             }}
           >
             {isSubmitting ? "Processing..." : "Deposit"}

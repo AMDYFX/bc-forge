@@ -159,3 +159,6 @@ export type {
   ConnectionStatusBarProps,
   LatencyTier,
 } from "./ConnectionStatusBar";
+
+export { PausedBanner } from "./PausedBanner";
+export type { PausedBannerProps } from "./PausedBanner";

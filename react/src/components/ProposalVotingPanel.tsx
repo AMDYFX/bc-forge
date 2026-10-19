@@ -46,6 +46,8 @@ export interface ProposalVotingPanelProps {
   onVote?: (proposalId: bigint) => void | Promise<void>;
   /** Routes the execution yourself instead of calling `executeProposal`. */
   onExecute?: (proposalId: bigint) => void | Promise<void>;
+  /** Refreshes parent proposal/RBAC data after a successful execution. */
+  onExecuted?: (proposalId: bigint) => void | Promise<void>;
   /** Message shown when `proposals` is empty. @default 'No pending proposals.' */
   emptyMessage?: string;
   /** Optional container style. */
@@ -151,6 +153,7 @@ export const ProposalVotingPanel: React.FC<ProposalVotingPanelProps> = ({
   showExecute = true,
   onVote,
   onExecute,
+  onExecuted,
   emptyMessage = "No pending proposals.",
   style,
   className,
@@ -246,6 +249,7 @@ export const ProposalVotingPanel: React.FC<ProposalVotingPanelProps> = ({
       try {
         await onExecute(bigintId);
         setToast({ status: "success" });
+        await onExecuted?.(bigintId);
       } catch (err) {
         setToast({
           status: "error",
@@ -266,6 +270,7 @@ export const ProposalVotingPanel: React.FC<ProposalVotingPanelProps> = ({
           (hash) => `Execution failed with transaction hash: ${hash}`,
         ),
       );
+      if (result.success) await onExecuted?.(bigintId);
     } catch (err) {
       setFailure({
         id: String(proposal.id),
