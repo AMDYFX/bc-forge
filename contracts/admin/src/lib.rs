@@ -322,6 +322,10 @@ pub enum AdminError {
     RoleNotHeldForRenounce = 28,
     /// The last SuperAdmin tried to renounce; at least one must remain (#915).
     LastSuperAdmin = 29,
+    /// A role proposal could not be found for the requested proposal ID.
+    RoleProposalNotFound = 30,
+    /// A role proposal must be executed through `execute_role_proposal`.
+    RoleProposalRequiresExecution = 31,
 }
 
 /// Storage keys for the access-control layer.
@@ -394,6 +398,9 @@ pub enum AdminKey {
     /// [`get_instance_ttl`] derives a non-negative remaining lifetime from this
     /// value. It is not one of the five monitored singleton keys.
     InstanceLiveUntil,
+    /// Role grant action attached to a legacy proposal, keyed by proposal ID.
+    /// Appended to preserve every existing storage-key discriminant.
+    RoleGrantProposal(u64),
 }
 
 /// Instance TTL and the count of known singleton admin keys.
@@ -594,6 +601,16 @@ mod tests {
             super::create_proposal(&env, creator, description)
         }
 
+        pub fn create_role_proposal(
+            env: Env,
+            creator: Address,
+            role: Role,
+            target: Address,
+            description: String,
+        ) -> u64 {
+            super::create_role_proposal(&env, creator, role, target, description)
+        }
+
         pub fn approve_proposal(env: Env, admin: Address, proposal_id: u64) {
             super::approve_proposal(&env, admin, proposal_id);
         }
@@ -604,6 +621,21 @@ mod tests {
 
         pub fn mark_executed(env: Env, proposal_id: u64) {
             super::mark_executed(&env, proposal_id);
+        }
+
+        pub fn execute_role_proposal(
+            env: Env,
+            executor: Address,
+            proposal_id: u64,
+        ) -> Result<(), AdminError> {
+            super::execute_role_proposal(&env, executor, proposal_id)
+        }
+
+        pub fn get_role_proposal(
+            env: Env,
+            proposal_id: u64,
+        ) -> Option<RoleGrantProposalDetails> {
+            super::get_role_proposal(&env, proposal_id)
         }
 
         pub fn cancel_legacy_proposal(

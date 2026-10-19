@@ -187,6 +187,16 @@ export interface ProposalLists {
   nextCursor: bigint | null;
 }
 
+/** Details and live approval tally for an on-chain role grant proposal. */
+export interface RoleGrantProposalDetails {
+  description: string;
+  role: Role;
+  target: string;
+  approvals: number;
+  quorum: number;
+  executed: boolean;
+}
+
 /** Normalize a native-decoded proposal-listing struct into {@link ProposalLists}. */
 function parseProposalLists(native: Record<string, unknown>): ProposalLists {
   const asIds = (value: unknown): bigint[] =>
@@ -1206,6 +1216,39 @@ export class bcForgeClient {
     );
   }
 
+  /** Create a multi-signature proposal bound to a specific role grant. */
+  async createRoleProposal(
+    creator: string,
+    role: Role,
+    target: string,
+    description: string,
+    source?: Keypair,
+  ): Promise<TransactionResult> {
+    return this.invokeContract(
+      'create_role_proposal',
+      [
+        addressToScVal(creator),
+        roleToScVal(role),
+        addressToScVal(target),
+        stringToScVal(description),
+      ],
+      source,
+    );
+  }
+
+  /** Approve a role grant after its multisig quorum has been reached. */
+  async executeRoleProposal(
+    executor: string,
+    proposalId: bigint,
+    source?: Keypair,
+  ): Promise<TransactionResult> {
+    return this.invokeContract(
+      'execute_role_proposal',
+      [addressToScVal(executor), nativeToScVal(proposalId, { type: 'u64' })],
+      source,
+    );
+  }
+
   /**
    * Execute a proposal once quorum is reached.
    */
@@ -1363,6 +1406,41 @@ export class bcForgeClient {
       const result = await this.queryContract('get_admin', []);
       return scValToNative(result) as string;
     }
+  }
+
+  /** Get the configured multi-signature admin pool. */
+  async getAdminPool(): Promise<string[]> {
+    const result = await this.queryContract('get_admin_pool', []);
+    const pool = scValToNative(result);
+    if (!Array.isArray(pool)) {
+      throw new Error('Invalid admin pool returned by contract');
+    }
+    return pool.map((address) => String(address));
+  }
+
+  /** Get the configured approval threshold. */
+  async getThreshold(): Promise<number> {
+    const result = await this.queryContract('get_threshold', []);
+    return Number(scValToNative(result));
+  }
+
+  /** Read a role proposal and its current approval tally. */
+  async getRoleProposal(proposalId: bigint | number): Promise<RoleGrantProposalDetails | null> {
+    const result = await this.queryContract('get_role_proposal', [
+      nativeToScVal(BigInt(proposalId), { type: 'u64' }),
+    ]);
+    const native = scValToNative(result);
+    if (!native || typeof native !== 'object') return null;
+    const fields = native as Record<string, unknown>;
+    const pick = (snake: string, camel: string) => fields[snake] ?? fields[camel];
+    return {
+      description: String(pick('description', 'description') ?? ''),
+      role: String(pick('role', 'role')) as Role,
+      target: String(pick('target', 'target')),
+      approvals: Number(pick('approvals', 'approvals')),
+      quorum: Number(pick('quorum', 'quorum')),
+      executed: Boolean(pick('executed', 'executed')),
+    };
   }
 
   /**
