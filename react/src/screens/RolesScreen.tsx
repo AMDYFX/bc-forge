@@ -11,6 +11,8 @@ import { GrantRoleModal } from "./GrantRoleModal";
 import type { GrantableRole } from "./GrantRoleModal";
 import { RevokeRoleModal } from "./RevokeRoleModal";
 import type { RevocableRole } from "./RevokeRoleModal";
+import { exportRbacReport } from "../utils";
+import type { RbacReportFormat } from "../utils";
 
 export interface RolesScreenProps {
   /** Optional container style */
@@ -127,6 +129,39 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
   const [grantOpen, setGrantOpen] = useState(false);
   const [revokeRole, setRevokeRole] = useState<RevocableRole | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [reportFormat, setReportFormat] = useState<RbacReportFormat>("csv");
+
+  const handleExport = async () => {
+    if (!roleState || !targetValid) return;
+    setError(null);
+    try {
+      const events =
+        typeof (client as unknown as { getEvents?: () => Promise<unknown[]> })
+          .getEvents === "function"
+          ? await (
+              client as unknown as { getEvents: () => Promise<unknown[]> }
+            ).getEvents()
+          : [];
+      const report = exportRbacReport(
+        trimmedTarget,
+        roleState,
+        events,
+        reportFormat,
+      );
+      const url = URL.createObjectURL(
+        new Blob([report.content], { type: report.mimeType }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = report.filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
 
   const trimmedTarget = target.trim();
   const targetValid = isValidStellarAddress(trimmedTarget);
@@ -402,6 +437,36 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
           are disabled.
         </span>
       )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            fontSize: "14px",
+          }}
+        >
+          Export format
+          <select
+            aria-label="Export format"
+            value={reportFormat}
+            onChange={(event) =>
+              setReportFormat(event.target.value as RbacReportFormat)
+            }
+          >
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={!roleState || !targetValid}
+          onClick={() => void handleExport()}
+        >
+          Export permissions
+        </button>
+      </div>
 
       <GrantRoleModal
         open={grantOpen}
