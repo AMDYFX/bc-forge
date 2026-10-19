@@ -16,6 +16,8 @@ const mockClient = {
   getDecimals: jest.fn(),
   getContractId: jest.fn(),
   getBalance: jest.fn(),
+  getNativeBalance: jest.fn(),
+  getRoleHierarchy: jest.fn(),
   getAllowance: jest.fn(),
   approveProposal: jest.fn(),
   hasRole: jest.fn(),
@@ -42,15 +44,15 @@ const mockClient = {
 const mockVaultClient = {
   deposit: jest.fn(),
 };
-const mockUseWallet = jest.fn(
-  (): {
-    status: string;
-    connected?: boolean;
-    publicKey?: string | null;
-  } => ({
-    status: "connected",
-  }),
-);
+const mockUseWallet = jest.fn(() => ({
+  status: "connected" as string,
+  connected: true,
+  publicKey:
+    "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT" as
+      | string
+      | null,
+  error: null as Error | null,
+}));
 
 jest.mock("./context", () => ({
   useBcForgeClient: () => mockClient,
@@ -83,6 +85,7 @@ import {
   useAccountBalance,
   useAllowance,
   useApprove,
+  useBalance,
   useBatchContractReads,
   useEstimateFee,
   useExtendContractTtl,
@@ -104,19 +107,197 @@ import {
   useTransfer,
   useVaultDeposit,
   useVestingSchedule,
+  useWalletBalancePolling,
 } from "./hooks";
 
 describe("React client hooks", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     clearTokenMetadataCache();
-    mockUseWallet.mockReturnValue({ status: "connected" });
+    mockUseWallet.mockReturnValue({
+      status: "connected",
+      connected: true,
+      publicKey: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT",
+      error: null,
+    });
     mockClient.getName.mockResolvedValue("BC Forge Token");
     mockClient.getSymbol.mockResolvedValue("BCF");
     mockClient.getDecimals.mockResolvedValue(7);
     mockClient.getContractId.mockReturnValue(
       "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
     );
+    mockClient.getBalance.mockResolvedValue(250_000_000n);
+    mockClient.getNativeBalance.mockResolvedValue(100_000_000n);
+    mockClient.getRoleHierarchy.mockResolvedValue({
+      address: "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT",
+      isAdmin: false,
+      isSuperAdmin: true,
+      isMinter: true,
+      isPauser: false,
+    });
+  });
+
+  describe("useBalance & useWalletBalancePolling (#1179)", () => {
+    const VALID_ADDRESS =
+      "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT";
+
+    it("validates Stellar G... and C... addresses properly", () => {
+      expect(isValidStellarAddress(VALID_ADDRESS)).toBe(true);
+      expect(
+        isValidStellarAddress(
+          "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+        ),
+      ).toBe(true);
+      expect(isValidStellarAddress("INVALID_ADDRESS")).toBe(false);
+      expect(isValidStellarAddress("X" + VALID_ADDRESS.slice(1))).toBe(false);
+    });
+
+    it("eagerly fetches forge token and native XLM balances when wallet transitions to connected", async () => {
+      mockUseWallet.mockReturnValue({
+        status: "disconnected",
+        connected: false,
+        publicKey: null,
+        error: null,
+      });
+
+      const { result, rerender } = renderHook(() =>
+        useWalletBalancePolling({ pollIntervalMs: 0 }),
+      );
+
+      expect(result.current.data).toBeNull();
+      expect(result.current.nativeBalance).toBeNull();
+      expect(result.current.loading).toBe(false);
+      expect(mockClient.getBalance).not.toHaveBeenCalled();
+
+      // Transition wallet to connected
+      mockUseWallet.mockReturnValue({
+        status: "connected",
+        connected: true,
+        publicKey: VALID_ADDRESS,
+        error: null,
+      });
+      rerender();
+
+      await waitFor(() => expect(result.current.data).toBe(250_000_000n));
+      expect(result.current.tokenBalance).toBe(250_000_000n);
+      expect(result.current.nativeBalance).toBe(100_000_000n);
+      expect(result.current.xlmBalance).toBe(100_000_000n);
+      expect(result.current.roles).toEqual({
+        address: VALID_ADDRESS,
+        isAdmin: false,
+        isSuperAdmin: true,
+        isMinter: true,
+        isPauser: false,
+      });
+      expect(result.current.lastUpdatedAt).not.toBeNull();
+      expect(result.current.error).toBeNull();
+      expect(result.current.alertMessage).toBeNull();
+      expect(mockClient.getBalance).toHaveBeenCalledWith(VALID_ADDRESS);
+      expect(mockClient.getNativeBalance).toHaveBeenCalledWith(VALID_ADDRESS);
+      expect(mockClient.getRoleHierarchy).toHaveBeenCalledWith(VALID_ADDRESS);
+    });
+
+    it("clears balances and stops polling when wallet disconnects", async () => {
+      const { result, rerender } = renderHook(() =>
+        useBalance(undefined, { pollIntervalMs: 0 }),
+      );
+
+      await waitFor(() => expect(result.current.data).toBe(250_000_000n));
+      expect(result.current.nativeBalance).toBe(100_000_000n);
+
+      mockUseWallet.mockReturnValue({
+        status: "disconnected",
+        connected: false,
+        publicKey: null,
+        error: null,
+      });
+      rerender();
+
+      expect(result.current.data).toBeNull();
+      expect(result.current.nativeBalance).toBeNull();
+      expect(result.current.roles).toBeNull();
+      expect(result.current.loading).toBe(false);
+    });
+
+    it("polls balances automatically on the configured interval while connected", async () => {
+      jest.useFakeTimers();
+      try {
+        const { result, unmount } = renderHook(() =>
+          useWalletBalancePolling({ pollIntervalMs: 3000 }),
+        );
+
+        await waitFor(() => expect(result.current.data).toBe(250_000_000n));
+        expect(mockClient.getBalance).toHaveBeenCalledTimes(1);
+
+        mockClient.getBalance.mockResolvedValueOnce(500_000_000n);
+        mockClient.getNativeBalance.mockResolvedValueOnce(200_000_000n);
+
+        await act(async () => {
+          jest.advanceTimersByTime(3000);
+        });
+
+        await waitFor(() => expect(result.current.data).toBe(500_000_000n));
+        expect(result.current.nativeBalance).toBe(200_000_000n);
+        expect(mockClient.getBalance).toHaveBeenCalledTimes(2);
+
+        unmount();
+        await act(async () => {
+          jest.advanceTimersByTime(6000);
+        });
+        expect(mockClient.getBalance).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it("captures invalid address format errors with a friendly alertMessage", async () => {
+      const { result } = renderHook(() => useBalance("INVALID!ADDRESS#FORMAT"));
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.data).toBeNull();
+      expect(result.current.error).toBeInstanceOf(Error);
+      expect(result.current.error?.message).toMatch(
+        /Invalid Stellar address format/,
+      );
+      expect(result.current.alertMessage).toMatch(
+        /Invalid Stellar address format/,
+      );
+      expect(mockClient.getBalance).not.toHaveBeenCalled();
+    });
+
+    it("handles RPC timeouts and network errors with friendly UI alert messages", async () => {
+      mockClient.getBalance.mockRejectedValueOnce(
+        new Error("RPC request timed out"),
+      );
+
+      const { result } = renderHook(() => useBalance(VALID_ADDRESS));
+
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.data).toBeNull();
+      expect(result.current.error).toBeInstanceOf(Error);
+      expect(result.current.alertMessage).toBe(
+        "Network request timed out or failed. Please check your connection and try again.",
+      );
+    });
+
+    it("surfaces wallet connection or wrong-network errors when no explicit address is given", () => {
+      mockUseWallet.mockReturnValue({
+        status: "wrong-network",
+        connected: false,
+        publicKey: null,
+        error: new Error(
+          "Wallet is connected to a different Stellar network.",
+        ),
+      });
+
+      const { result } = renderHook(() => useBalance());
+
+      expect(result.current.data).toBeNull();
+      expect(result.current.error?.message).toMatch(/different Stellar network/);
+      expect(result.current.alertMessage).toBe(
+        "Wallet is connected to a different Stellar network than expected.",
+      );
+    });
   });
 
   describe("useTokenMetadata (#1184)", () => {
@@ -381,6 +562,11 @@ describe("React client hooks", () => {
     });
 
     it("stays idle without an address and surfaces errors", async () => {
+      mockUseWallet.mockReturnValue({
+        status: "disconnected",
+        connected: false,
+        publicKey: null,
+      });
       const idle = renderHook(() => useHasRole("Minter" as never, undefined));
       expect(idle.result.current.data).toBeNull();
       expect(mockClient.hasRole).not.toHaveBeenCalled();

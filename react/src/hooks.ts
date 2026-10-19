@@ -10,13 +10,14 @@ import type { Keypair } from "@stellar/stellar-sdk";
 import { Role, parseContractError } from "@bc-forge/sdk";
 import type {
   bcForgeClient,
+  RoleHierarchy,
   TransactionResult,
   VaultClient,
 } from "@bc-forge/sdk";
-import { formatTokenAmount } from "./utils";
+import { formatTokenAmount, parseWalletError } from "./utils";
 
 /**
- * Hook to read the connected wallet state: adapter name, public key,
+ * Hook to read the connected wallet state: adapter name, publicKey,
  * connection status, and connect/disconnect actions (#902). Transactions
  * submitted while connected are signed by the adapter, so no `Keypair` is
  * required. Defined in `./context`; re-exported here alongside the write
@@ -584,35 +585,487 @@ export function useBcForgeToken() {
   return { data, loading, error };
 }
 
+// ─── Balance & Automated Connect Polling (#1179) ────────────────────────────
+
 /**
- * Hook to fetch the balance of a specific address.
+ * Default RPC request timeout in milliseconds for balance and role queries.
  */
-export function useBalance(address: string | undefined) {
-  const client = useBcForgeClient();
+export const DEFAULT_BALANCE_TIMEOUT_MS = 10_000;
+
+/**
+ * Default background polling interval in milliseconds while a wallet is connected.
+ */
+export const DEFAULT_BALANCE_POLL_INTERVAL_MS = 15_000;
+
+
+/**
+ * Configuration options for {@link useBalance} and {@link useWalletBalancePolling}.
+ */
+export interface UseBalanceOptions {
+  /**
+   * Explicit {@link bcForgeClient} instance override.
+   * When omitted, resolves the client from {@link BcForgeProvider}.
+   */
+  client?: bcForgeClient | null;
+  /**
+   * Optional explicit native XLM balance fetcher (returns stroops as `bigint`).
+   * When omitted, queries `client.getNativeBalance(address)` if available, or
+   * reads the Stellar account ledger entry via the client's Soroban RPC server.
+   */
+  fetchNativeBalance?: (address: string) => Promise<bigint>;
+  /**
+   * Optional explicit role hierarchy fetcher.
+   * When omitted and `includeRoles` is enabled, queries `client.getRoleHierarchy(address)`.
+   */
+  fetchRoles?: (address: string) => Promise<RoleHierarchy | null>;
+  /**
+   * Whether to eagerly query native XLM balance alongside the forge token balance.
+   * @default true
+   */
+  includeNative?: boolean;
+  /**
+   * Whether to also query RBAC role membership on wallet connection.
+   * @default false
+   */
+  includeRoles?: boolean;
+  /**
+   * Whether automatic balance fetching is enabled.
+   * @default true
+   */
+  enabled?: boolean;
+  /**
+   * Optional polling interval in milliseconds for periodic background refreshes
+   * while the target address / wallet is connected.
+   * Set to `0` or omit to disable interval polling.
+   */
+  pollIntervalMs?: number;
+  /**
+   * Maximum time in milliseconds before an RPC balance query times out.
+   * @default 10000
+   */
+  timeoutMs?: number;
+}
+
+/**
+ * Snapshot of balances (and optional roles) returned by {@link useBalance}
+ * and {@link useWalletBalancePolling}.
+ */
+export interface WalletBalancesSnapshot {
+  /** Forge token balance in atomic units, or `null` if not yet loaded. */
+  tokenBalance: bigint | null;
+  /** Native XLM balance in stroops (`1 XLM = 10^7 stroops`), or `null` if unavailable. */
+  nativeBalance: bigint | null;
+  /** Optional RBAC role hierarchy for the address, when `includeRoles` is enabled. */
+  roles: RoleHierarchy | null;
+  /** Timestamp (epoch ms) of the last successful balance refresh, or `null`. */
+  lastUpdatedAt: number | null;
+}
+
+/**
+ * Return value of {@link useBalance} and {@link useWalletBalancePolling}.
+ */
+export interface UseBalanceResult extends WalletBalancesSnapshot {
+  /**
+   * Forge token balance in atomic units (alias of `tokenBalance` for backward compatibility).
+   */
+  data: bigint | null;
+  /**
+   * Native XLM balance in stroops (alias of `nativeBalance`).
+   */
+  xlmBalance: bigint | null;
+  /** `true` while an initial or manual balance query is in flight. */
+  loading: boolean;
+  /** Error captured from the most recent failed balance fetch, or `null`. */
+  error: Error | null;
+  /**
+   * Friendly, human-readable alert message describing `error` (or network/wallet issues),
+   * suitable for rendering directly in an `<Alert>` component; `null` when healthy.
+   */
+  alertMessage: string | null;
+  /**
+   * Manually trigger an immediate refresh of balances (and roles if enabled).
+   */
+  refetch: () => Promise<WalletBalancesSnapshot | null>;
+}
+
+/**
+ * Wraps a promise with a timeout guard to prevent hung RPC calls.
+ */
+async function withRpcTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  timeoutMessage = "RPC balance query timed out.",
+): Promise<T> {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return promise;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Resolves native XLM balance (in stroops) using available client hooks or Soroban RPC.
+ */
+async function queryNativeXlmBalance(
+  client: bcForgeClient,
+  address: string,
+  customFetcher?: (addr: string) => Promise<bigint>,
+): Promise<bigint | null> {
+  if (customFetcher) {
+    return customFetcher(address);
+  }
+
+  const candidate = client as unknown as {
+    getNativeBalance?: (addr: string) => Promise<bigint | string | number>;
+    getXlmBalance?: (addr: string) => Promise<bigint | string | number>;
+    server?: {
+      getAccount?: (addr: string) => Promise<unknown>;
+      getLedgerEntries?: (...args: unknown[]) => Promise<unknown>;
+    };
+  };
+
+  if (typeof candidate.getNativeBalance === "function") {
+    const val = await candidate.getNativeBalance(address);
+    return BigInt(val);
+  }
+
+  if (typeof candidate.getXlmBalance === "function") {
+    const val = await candidate.getXlmBalance(address);
+    return BigInt(val);
+  }
+
+  // Fallback: attempt to inspect account object if exposed by a custom/mock server
+  if (candidate.server && typeof candidate.server.getAccount === "function") {
+    try {
+      const account = (await candidate.server.getAccount(address)) as {
+        balance?: string | number | bigint;
+        balances?: Array<{ asset_type?: string; balance?: string }>;
+      } | null;
+      if (account && account.balance !== undefined) {
+        return BigInt(account.balance);
+      }
+      if (account && Array.isArray(account.balances)) {
+        const nativeEntry = account.balances.find(
+          (b) => b.asset_type === "native",
+        );
+        if (nativeEntry?.balance !== undefined) {
+          const cleaned = String(nativeEntry.balance).replace(".", "");
+          return BigInt(cleaned);
+        }
+      }
+    } catch {
+      // Account lookup may not carry native balance on basic Soroban RPC getAccount; ignore gracefully
+    }
+  }
+
+  return 0n;
+}
+
+/**
+ * Resolves RBAC role hierarchy for an address if supported by the client.
+ */
+async function queryRoleHierarchy(
+  client: bcForgeClient,
+  address: string,
+  customFetcher?: (addr: string) => Promise<RoleHierarchy | null>,
+): Promise<RoleHierarchy | null> {
+  if (customFetcher) {
+    return customFetcher(address);
+  }
+
+  const candidate = client as unknown as {
+    getRoleHierarchy?: (addr: string) => Promise<RoleHierarchy>;
+  };
+
+  if (typeof candidate.getRoleHierarchy === "function") {
+    try {
+      return await candidate.getRoleHierarchy(address);
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Hook to fetch and poll the forge token balance and native XLM balance for an address (#1179).
+ *
+ * When `address` is omitted, the hook automatically observes {@link useWallet} and
+ * dispatches eager queries for native XLM and forge token balances immediately when
+ * the wallet transitions to `'connected'`. When the wallet disconnects or transitions
+ * to `'wrong-network'` / `'error'`, balances are reset and active polling is stopped.
+ *
+ * @param address - Optional explicit Stellar address (`G...`). Falls back to the connected wallet's `publicKey`.
+ * @param options - Optional configuration for polling interval, native XLM lookup, role lookup, and timeouts.
+ * @returns Balance state, native XLM balance, loading/error indicators, friendly `alertMessage`, and `refetch`.
+ */
+export function useBalance(
+  address?: string | undefined,
+  options: UseBalanceOptions = {},
+): UseBalanceResult {
+  const {
+    client: clientOption,
+    fetchNativeBalance,
+    fetchRoles,
+    includeNative = true,
+    includeRoles = false,
+    enabled = true,
+    pollIntervalMs,
+    timeoutMs = DEFAULT_BALANCE_TIMEOUT_MS,
+  } = options;
+
+  const optionalClient = useOptionalBcForgeClient();
+  let client: bcForgeClient | null = null;
+  if (clientOption !== undefined) {
+    client = clientOption;
+  } else if (optionalClient) {
+    client = optionalClient;
+  } else {
+    client = useBcForgeClient();
+  }
+
+  const wallet = useWallet();
+  const isExplicitAddress = address !== undefined;
+  const resolvedAddress = isExplicitAddress
+    ? address?.trim() || undefined
+    : wallet.status === "connected" && wallet.publicKey
+      ? wallet.publicKey.trim()
+      : undefined;
+
   const [data, setData] = useState<bigint | null>(null);
+  const [nativeBalance, setNativeBalance] = useState<bigint | null>(null);
+  const [roles, setRoles] = useState<RoleHierarchy | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  const fetchBalance = useCallback(async () => {
-    if (!address) return;
-    try {
-      setLoading(true);
-      const balance = await client.getBalance(address);
-      setData(balance);
-    } catch (err) {
-      setError(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      setLoading(false);
-    }
-  }, [client, address]);
+  const mountedRef = useRef(true);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const fetchBalance = useCallback(async (): Promise<WalletBalancesSnapshot | null> => {
+    if (!enabled || !client || !resolvedAddress) {
+      return null;
+    }
+
+    // Validate address format when an explicit 56-char or malformed address is detected
+    if (
+      resolvedAddress.length === 56 &&
+      !isValidStellarAddress(resolvedAddress)
+    ) {
+      const invalidErr = new Error(
+        `Invalid Stellar address format: "${resolvedAddress}".`,
+      );
+      if (mountedRef.current) {
+        setError(invalidErr);
+        setLoading(false);
+      }
+      return null;
+    }
+
+    if (
+      !/^[GC][A-Z0-9_]+$/i.test(resolvedAddress)
+    ) {
+      const invalidErr = new Error(
+        `Invalid Stellar address format: "${resolvedAddress}".`,
+      );
+      if (mountedRef.current) {
+        setError(invalidErr);
+        setLoading(false);
+      }
+      return null;
+    }
+
+    const currentRequestId = ++requestIdRef.current;
+
+    if (mountedRef.current) {
+      setLoading(true);
+      setError(null);
+    }
+
+    try {
+      const tokenPromise = withRpcTimeout(
+        client.getBalance(resolvedAddress),
+        timeoutMs,
+        "RPC balance query timed out.",
+      );
+
+      const nativePromise = includeNative
+        ? withRpcTimeout(
+            queryNativeXlmBalance(client, resolvedAddress, fetchNativeBalance),
+            timeoutMs,
+            "Native XLM balance query timed out.",
+          ).catch((err) => {
+            if (fetchNativeBalance) throw err;
+            return null;
+          })
+        : Promise.resolve(null);
+
+      const rolesPromise = includeRoles
+        ? withRpcTimeout(
+            queryRoleHierarchy(client, resolvedAddress, fetchRoles),
+            timeoutMs,
+            "Role hierarchy query timed out.",
+          ).catch((err) => {
+            if (fetchRoles) throw err;
+            return null;
+          })
+        : Promise.resolve(null);
+
+      const [rawTokenBalance, resolvedNative, resolvedRoles] = await Promise.all([
+        tokenPromise,
+        nativePromise,
+        rolesPromise,
+      ]);
+
+      const tokenBalance =
+        typeof rawTokenBalance === "bigint"
+          ? rawTokenBalance
+          : BigInt(rawTokenBalance as string | number);
+
+      const updatedAt = Date.now();
+      const snapshot: WalletBalancesSnapshot = {
+        tokenBalance,
+        nativeBalance: resolvedNative,
+        roles: resolvedRoles,
+        lastUpdatedAt: updatedAt,
+      };
+
+      if (mountedRef.current && currentRequestId === requestIdRef.current) {
+        setData(tokenBalance);
+        setNativeBalance(resolvedNative);
+        setRoles(resolvedRoles);
+        setLastUpdatedAt(updatedAt);
+        setError(null);
+      }
+
+      return snapshot;
+    } catch (err) {
+      const rawError = err instanceof Error ? err : new Error(String(err));
+      const normalized = normalizeMetadataError(rawError);
+      if (mountedRef.current && currentRequestId === requestIdRef.current) {
+        setError(normalized);
+      }
+      return null;
+    } finally {
+      if (mountedRef.current && currentRequestId === requestIdRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [
+    enabled,
+    client,
+    resolvedAddress,
+    timeoutMs,
+    includeNative,
+    includeRoles,
+    fetchNativeBalance,
+    fetchRoles,
+  ]);
+
+  // Eagerly fetch on mount / when address or connection state transitions to connected,
+  // and clear stale data when disconnected.
+  useEffect(() => {
+    if (!enabled || !client || !resolvedAddress) {
+      requestIdRef.current++;
+      setData(null);
+      setNativeBalance(null);
+      setRoles(null);
+      setLastUpdatedAt(null);
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
     void (async () => {
       await fetchBalance();
     })();
-  }, [fetchBalance]);
+  }, [enabled, client, resolvedAddress, fetchBalance]);
 
-  return { data, loading, error, refetch: fetchBalance };
+  // Automated background polling while connected / enabled
+  useEffect(() => {
+    if (
+      !enabled ||
+      !client ||
+      !resolvedAddress ||
+      !pollIntervalMs ||
+      pollIntervalMs <= 0
+    ) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      void fetchBalance();
+    }, pollIntervalMs);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, [enabled, client, resolvedAddress, pollIntervalMs, fetchBalance]);
+
+  const effectiveError =
+    error ??
+    (!isExplicitAddress &&
+    (wallet.status === "error" || wallet.status === "wrong-network")
+      ? wallet.error
+      : null);
+
+  const alertMessage = effectiveError ? parseWalletError(effectiveError) : null;
+
+  return {
+    data,
+    tokenBalance: data,
+    nativeBalance,
+    xlmBalance: nativeBalance,
+    roles,
+    lastUpdatedAt,
+    loading,
+    error: effectiveError,
+    alertMessage,
+    refetch: fetchBalance,
+  };
+}
+
+/**
+ * Hook that triggers automated eager balance (native XLM + forge token) and role
+ * polling immediately when the wallet transitions to `'connected'` (#1179).
+ *
+ * @param options - Configuration options (polling interval defaults to {@link DEFAULT_BALANCE_POLL_INTERVAL_MS}).
+ * @returns Live balance & role snapshot, loading/error states, and manual `refetch`.
+ */
+export function useWalletBalancePolling(
+  options: UseBalanceOptions = {},
+): UseBalanceResult {
+  const {
+    pollIntervalMs = DEFAULT_BALANCE_POLL_INTERVAL_MS,
+    includeNative = true,
+    includeRoles = true,
+    ...rest
+  } = options;
+
+  return useBalance(undefined, {
+    pollIntervalMs,
+    includeNative,
+    includeRoles,
+    ...rest,
+  });
 }
 
 /**
