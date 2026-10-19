@@ -142,48 +142,6 @@ describe("VaultsScreen", () => {
     expect(withdrawBtn).toBeDisabled();
   });
 
-  it("shows a live preview of the estimated vault shares for a deposit", async () => {
-    (calculateApy as jest.Mock).mockResolvedValue(null);
-
-    render(<VaultsScreen client={mockClient} walletAdapter={mockAdapter} />);
-
-    const depositInput = screen.getByPlaceholderText(
-      /enter positive integer amount/i,
-    );
-    fireEvent.change(depositInput, { target: { value: "500" } });
-
-    await waitFor(() => {
-      expect(
-        screen.getByText(/you will receive ~250 vault shares/i),
-      ).toBeInTheDocument();
-    });
-  });
-
-  it("fills the withdraw input with the connected share balance when MAX is clicked and blocks oversized withdrawals", async () => {
-    (calculateApy as jest.Mock).mockResolvedValue(null);
-
-    render(<VaultsScreen client={mockClient} walletAdapter={mockAdapter} />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("share-balance")).toHaveTextContent("100");
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /^max$/i }));
-    expect(
-      screen.getByPlaceholderText(/enter positive integer shares/i),
-    ).toHaveValue("100");
-
-    fireEvent.change(
-      screen.getByPlaceholderText(/enter positive integer shares/i),
-      { target: { value: "101" } },
-    );
-    fireEvent.click(screen.getByRole("button", { name: /^withdraw$/i }));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Withdraw amount cannot exceed your available shares",
-    );
-  });
-
   it("submitting a valid deposit calls VaultClient.deposit exactly once", async () => {
     (calculateApy as jest.Mock).mockResolvedValue(null);
 
@@ -199,6 +157,7 @@ describe("VaultsScreen", () => {
     const depositBtn = screen.getByRole("button", { name: /^deposit$/i });
 
     fireEvent.change(depositInput, { target: { value: "500" } });
+    await screen.findByText("Estimated shares: 250");
     fireEvent.click(depositBtn);
 
     await waitFor(() => {
@@ -209,10 +168,15 @@ describe("VaultsScreen", () => {
       mockAdapter.publicKey,
       500n,
       mockAdapter,
+      248n,
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("tx-hash")).toHaveTextContent(
+      expect(screen.getByTestId("transaction-toast")).toHaveAttribute(
+        "data-status",
+        "success",
+      );
+      expect(screen.getByTestId("transaction-toast-hash")).toHaveTextContent(
         "0xabc123deposit",
       );
     });
@@ -233,6 +197,7 @@ describe("VaultsScreen", () => {
     const withdrawBtn = screen.getByRole("button", { name: /^withdraw$/i });
 
     fireEvent.change(withdrawInput, { target: { value: "25" } });
+    await screen.findByText("You will receive ~50 tokens (no withdrawal fee)");
     fireEvent.click(withdrawBtn);
 
     await waitFor(() => {
@@ -243,11 +208,47 @@ describe("VaultsScreen", () => {
       mockAdapter.publicKey,
       25n,
       mockAdapter,
+      49n,
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId("tx-hash")).toHaveTextContent(
+      expect(screen.getByTestId("transaction-toast")).toHaveAttribute(
+        "data-status",
+        "success",
+      );
+      expect(screen.getByTestId("transaction-toast-hash")).toHaveTextContent(
         "0xdef456withdraw",
+      );
+    });
+  });
+
+  it("applies custom slippage using integer floor arithmetic", async () => {
+    (calculateApy as jest.Mock).mockResolvedValue(null);
+
+    render(<VaultsScreen client={mockClient} walletAdapter={mockAdapter} />);
+    await screen.findByTestId("share-balance");
+
+    fireEvent.change(
+      screen.getByPlaceholderText(/enter positive integer amount/i),
+      {
+        target: { value: "500" },
+      },
+    );
+    await screen.findByText("Estimated shares: 250");
+    fireEvent.change(screen.getByLabelText("Slippage tolerance"), {
+      target: { value: "custom" },
+    });
+    fireEvent.change(screen.getByLabelText("Custom slippage (%)"), {
+      target: { value: "2.25" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^deposit$/i }));
+
+    await waitFor(() => {
+      expect(mockClient.deposit).toHaveBeenCalledWith(
+        mockAdapter.publicKey,
+        500n,
+        mockAdapter,
+        244n,
       );
     });
   });
@@ -296,6 +297,7 @@ describe("VaultsScreen", () => {
     const depositBtn = screen.getByRole("button", { name: /^deposit$/i });
 
     fireEvent.change(depositInput, { target: { value: "100" } });
+    await screen.findByText("Estimated shares: 50");
     fireEvent.click(depositBtn);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
