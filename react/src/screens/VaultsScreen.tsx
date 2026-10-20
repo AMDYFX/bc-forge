@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { VaultClient, calculateApy } from '@bc-forge/sdk';
-import type { ApyResult, WalletAdapter } from '@bc-forge/sdk';
-import { Alert } from '../components/Alert';
-import { isPositiveInteger } from '../utils';
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { VaultClient, calculateApy } from "@bc-forge/sdk";
+import type { ApyResult, WalletAdapter } from "@bc-forge/sdk";
+import { Alert } from "../components/Alert";
+import { isPositiveInteger } from "../utils";
 
 export interface VaultsScreenProps {
   /** Optional pre-instantiated VaultClient instance */
@@ -27,7 +27,7 @@ export interface VaultsScreenProps {
 }
 
 export const EMPTY_STATE_APY_MESSAGE =
-  'Vault has no outstanding shares or insufficient historical data.';
+  "Vault has no outstanding shares or insufficient historical data.";
 
 export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   client,
@@ -46,8 +46,8 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   const [shareBalance, setShareBalance] = useState<bigint | null>(null);
   const [apyResult, setApyResult] = useState<ApyResult | null>(null);
 
-  const [depositAmount, setDepositAmount] = useState('');
-  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [depositAmount, setDepositAmount] = useState("");
+  const [withdrawAmount, setWithdrawAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [successTx, setSuccessTx] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -59,6 +59,23 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
     walletAdapter?.publicKey;
 
   const isConnected = Boolean(connectedAddress);
+
+  const depositPreviewShares = useMemo(() => {
+    const trimmed = depositAmount.trim();
+    if (
+      !trimmed ||
+      !isPositiveInteger(trimmed) ||
+      sharePrice === null ||
+      sharePrice === 0n
+    ) {
+      return null;
+    }
+    const amount = BigInt(trimmed);
+    return amount / sharePrice;
+  }, [depositAmount, sharePrice]);
+
+  const hasZeroShareBalance = shareBalance === 0n;
+  const canWithdraw = isConnected && !hasZeroShareBalance && !isSubmitting;
 
   const activeClient = useMemo(() => {
     if (client) return client;
@@ -73,11 +90,15 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
     return null;
   }, [client, rpcUrl, networkPassphrase, contractId, walletAdapter]);
 
-  const activeRpcUrl = rpcUrl || (activeClient as unknown as { rpcUrl?: string })?.rpcUrl;
+  const activeRpcUrl =
+    rpcUrl || (activeClient as unknown as { rpcUrl?: string })?.rpcUrl;
   const activePassphrase =
-    networkPassphrase || (activeClient as unknown as { networkPassphrase?: string })?.networkPassphrase;
+    networkPassphrase ||
+    (activeClient as unknown as { networkPassphrase?: string })
+      ?.networkPassphrase;
   const activeContractId =
-    contractId || (activeClient as unknown as { contractId?: string })?.contractId;
+    contractId ||
+    (activeClient as unknown as { contractId?: string })?.contractId;
 
   const loadData = useCallback(async () => {
     if (!activeClient) return;
@@ -93,7 +114,9 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       setSharePrice(price);
 
       if (connectedAddress) {
-        const balance = await activeClient.getShareBalance(connectedAddress).catch(() => 0n);
+        const balance = await activeClient
+          .getShareBalance(connectedAddress)
+          .catch(() => 0n);
         setShareBalance(balance);
       } else {
         setShareBalance(null);
@@ -141,13 +164,13 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
     setSuccessTx(null);
 
     if (!connectedAddress || !activeClient) {
-      setError('Wallet must be connected to deposit');
+      setError("Wallet must be connected to deposit");
       return;
     }
 
     const trimmed = depositAmount.trim();
     if (!isPositiveInteger(trimmed)) {
-      setError('Deposit amount must be a positive integer');
+      setError("Deposit amount must be a positive integer");
       return;
     }
 
@@ -158,17 +181,17 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       const result = await activeClient.deposit(
         connectedAddress,
         amountBigInt,
-        walletAdapter as unknown as import('@stellar/stellar-sdk').Keypair,
+        walletAdapter as unknown as import("@stellar/stellar-sdk").Keypair,
       );
       if (result && result.success) {
         setSuccessTx(result.hash);
-        setDepositAmount('');
+        setDepositAmount("");
         await loadData();
       } else {
         setError(
           result?.hash
             ? `Deposit failed with transaction hash: ${result.hash}`
-            : 'Deposit transaction failed',
+            : "Deposit transaction failed",
         );
       }
     } catch (err) {
@@ -185,34 +208,38 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
     setSuccessTx(null);
 
     if (!connectedAddress || !activeClient) {
-      setError('Wallet must be connected to withdraw');
+      setError("Wallet must be connected to withdraw");
       return;
     }
 
     const trimmed = withdrawAmount.trim();
     if (!isPositiveInteger(trimmed)) {
-      setError('Withdraw amount must be a positive integer');
+      setError("Withdraw amount must be a positive integer");
       return;
     }
 
     const sharesBigInt = BigInt(trimmed);
+    if (shareBalance !== null && sharesBigInt > shareBalance) {
+      setError("Withdraw amount cannot exceed your available shares");
+      return;
+    }
 
     setIsSubmitting(true);
     try {
       const result = await activeClient.withdraw(
         connectedAddress,
         sharesBigInt,
-        walletAdapter as unknown as import('@stellar/stellar-sdk').Keypair,
+        walletAdapter as unknown as import("@stellar/stellar-sdk").Keypair,
       );
       if (result && result.success) {
         setSuccessTx(result.hash);
-        setWithdrawAmount('');
+        setWithdrawAmount("");
         await loadData();
       } else {
         setError(
           result?.hash
             ? `Withdraw failed with transaction hash: ${result.hash}`
-            : 'Withdraw transaction failed',
+            : "Withdraw transaction failed",
         );
       }
     } catch (err) {
@@ -227,20 +254,23 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
     <div
       className={className}
       style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '24px',
-        padding: '24px',
-        maxWidth: '800px',
-        margin: '0 auto',
-        fontFamily: 'inherit',
+        display: "flex",
+        flexDirection: "column",
+        gap: "24px",
+        padding: "24px",
+        maxWidth: "800px",
+        margin: "0 auto",
+        fontFamily: "inherit",
         ...style,
       }}
     >
       <div>
-        <h1 style={{ margin: '0 0 8px 0', fontSize: '24px', fontWeight: 700 }}>Vaults Dashboard</h1>
-        <p style={{ margin: 0, color: '#4b5563', fontSize: '14px' }}>
-          Overview of yield-bearing fee vault metrics and deposit/withdraw controls.
+        <h1 style={{ margin: "0 0 8px 0", fontSize: "24px", fontWeight: 700 }}>
+          Vaults Dashboard
+        </h1>
+        <p style={{ margin: 0, color: "#4b5563", fontSize: "14px" }}>
+          Overview of yield-bearing fee vault metrics and deposit/withdraw
+          controls.
         </p>
       </div>
 
@@ -251,7 +281,11 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       )}
 
       {successTx && (
-        <Alert variant="success" title="Transaction Success" onDismiss={() => setSuccessTx(null)}>
+        <Alert
+          variant="success"
+          title="Transaction Success"
+          onDismiss={() => setSuccessTx(null)}
+        >
           Transaction confirmed: <code data-testid="tx-hash">{successTx}</code>
         </Alert>
       )}
@@ -259,90 +293,126 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       {/* Metrics Section */}
       <div
         style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-          gap: '16px',
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+          gap: "16px",
         }}
       >
         <div
           style={{
-            padding: '16px',
-            border: '1px solid #e5e7eb',
-            borderRadius: '8px',
-            backgroundColor: '#ffffff',
+            padding: "16px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "8px",
+            backgroundColor: "#ffffff",
           }}
         >
-          <div style={{ fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>
+          <div
+            style={{
+              fontSize: "12px",
+              color: "#6b7280",
+              textTransform: "uppercase",
+            }}
+          >
             Total Assets
           </div>
           <div
             data-testid="total-assets"
-            style={{ fontSize: '20px', fontWeight: 600, marginTop: '4px' }}
+            style={{ fontSize: "20px", fontWeight: 600, marginTop: "4px" }}
           >
-            {totalAssets !== null ? totalAssets.toString() : isLoadingMetrics ? 'Loading...' : '0'}
+            {totalAssets !== null
+              ? totalAssets.toString()
+              : isLoadingMetrics
+                ? "Loading..."
+                : "0"}
           </div>
         </div>
 
         <div
           style={{
-            padding: '16px',
-            border: '1px solid #e5e7eb',
-            borderRadius: '8px',
-            backgroundColor: '#ffffff',
+            padding: "16px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "8px",
+            backgroundColor: "#ffffff",
           }}
         >
-          <div style={{ fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>
+          <div
+            style={{
+              fontSize: "12px",
+              color: "#6b7280",
+              textTransform: "uppercase",
+            }}
+          >
             Total Shares
           </div>
           <div
             data-testid="total-shares"
-            style={{ fontSize: '20px', fontWeight: 600, marginTop: '4px' }}
+            style={{ fontSize: "20px", fontWeight: 600, marginTop: "4px" }}
           >
-            {totalShares !== null ? totalShares.toString() : isLoadingMetrics ? 'Loading...' : '0'}
+            {totalShares !== null
+              ? totalShares.toString()
+              : isLoadingMetrics
+                ? "Loading..."
+                : "0"}
           </div>
         </div>
 
         <div
           style={{
-            padding: '16px',
-            border: '1px solid #e5e7eb',
-            borderRadius: '8px',
-            backgroundColor: '#ffffff',
+            padding: "16px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "8px",
+            backgroundColor: "#ffffff",
           }}
         >
-          <div style={{ fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>
+          <div
+            style={{
+              fontSize: "12px",
+              color: "#6b7280",
+              textTransform: "uppercase",
+            }}
+          >
             Share Price
           </div>
           <div
             data-testid="share-price"
-            style={{ fontSize: '20px', fontWeight: 600, marginTop: '4px' }}
+            style={{ fontSize: "20px", fontWeight: 600, marginTop: "4px" }}
           >
-            {sharePrice !== null ? sharePrice.toString() : isLoadingMetrics ? 'Loading...' : '0'}
+            {sharePrice !== null
+              ? sharePrice.toString()
+              : isLoadingMetrics
+                ? "Loading..."
+                : "0"}
           </div>
         </div>
 
         <div
           style={{
-            padding: '16px',
-            border: '1px solid #e5e7eb',
-            borderRadius: '8px',
-            backgroundColor: '#ffffff',
+            padding: "16px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "8px",
+            backgroundColor: "#ffffff",
           }}
         >
-          <div style={{ fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>
+          <div
+            style={{
+              fontSize: "12px",
+              color: "#6b7280",
+              textTransform: "uppercase",
+            }}
+          >
             Your Share Balance
           </div>
           <div
             data-testid="share-balance"
-            style={{ fontSize: '20px', fontWeight: 600, marginTop: '4px' }}
+            style={{ fontSize: "20px", fontWeight: 600, marginTop: "4px" }}
           >
             {isConnected
               ? shareBalance !== null
                 ? shareBalance.toString()
                 : isLoadingMetrics
-                  ? 'Loading...'
-                  : '0'
-              : 'Disconnected'}
+                  ? "Loading..."
+                  : "0"
+              : "Disconnected"}
           </div>
         </div>
       </div>
@@ -350,23 +420,31 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       {/* APY Section */}
       <div
         style={{
-          padding: '16px',
-          border: '1px solid #e5e7eb',
-          borderRadius: '8px',
-          backgroundColor: '#f9fafb',
+          padding: "16px",
+          border: "1px solid #e5e7eb",
+          borderRadius: "8px",
+          backgroundColor: "#f9fafb",
         }}
       >
-        <div style={{ fontSize: '12px', color: '#6b7280', textTransform: 'uppercase' }}>
+        <div
+          style={{
+            fontSize: "12px",
+            color: "#6b7280",
+            textTransform: "uppercase",
+          }}
+        >
           Current Vault APY
         </div>
         <div
           data-testid="vault-apy"
-          style={{ fontSize: '18px', fontWeight: 600, marginTop: '4px' }}
+          style={{ fontSize: "18px", fontWeight: 600, marginTop: "4px" }}
         >
           {apyResult !== null ? (
             `${(apyResult.apy * 100).toFixed(2)}%`
           ) : (
-            <span style={{ fontSize: '14px', fontWeight: 400, color: '#4b5563' }}>
+            <span
+              style={{ fontSize: "14px", fontWeight: 400, color: "#4b5563" }}
+            >
               {EMPTY_STATE_APY_MESSAGE}
             </span>
           )}
@@ -376,9 +454,9 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       {/* Action Forms */}
       <div
         style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-          gap: '20px',
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))",
+          gap: "20px",
         }}
       >
         {/* Deposit Form */}
@@ -386,17 +464,26 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
           onSubmit={handleDeposit}
           data-testid="deposit-form"
           style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px',
-            padding: '20px',
-            border: '1px solid #e5e7eb',
-            borderRadius: '8px',
-            backgroundColor: '#ffffff',
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+            padding: "20px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "8px",
+            backgroundColor: "#ffffff",
           }}
         >
-          <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Deposit Assets</h2>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '14px' }}>
+          <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 600 }}>
+            Deposit Assets
+          </h2>
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+              fontSize: "14px",
+            }}
+          >
             Amount
             <input
               type="text"
@@ -406,28 +493,39 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
               onChange={(e) => setDepositAmount(e.target.value)}
               disabled={!isConnected || isSubmitting}
               style={{
-                padding: '8px 12px',
-                border: '1px solid #d1d5db',
-                borderRadius: '6px',
-                fontSize: '14px',
-                outline: 'none',
+                padding: "8px 12px",
+                border: "1px solid #d1d5db",
+                borderRadius: "6px",
+                fontSize: "14px",
+                outline: "none",
               }}
             />
           </label>
+          <div
+            style={{ fontSize: "13px", color: "#4b5563", minHeight: "20px" }}
+          >
+            {depositAmount.trim() &&
+            isPositiveInteger(depositAmount.trim()) &&
+            sharePrice !== null &&
+            sharePrice !== 0n
+              ? `You will receive ~${depositPreviewShares?.toString() ?? "0"} vault shares`
+              : "Enter an amount to preview the shares minted."}
+          </div>
           <button
             type="submit"
             disabled={!isConnected || isSubmitting}
             style={{
-              padding: '10px 16px',
-              backgroundColor: !isConnected || isSubmitting ? '#9ca3af' : '#2563eb',
-              color: '#ffffff',
-              border: 'none',
-              borderRadius: '6px',
+              padding: "10px 16px",
+              backgroundColor:
+                !isConnected || isSubmitting ? "#9ca3af" : "#2563eb",
+              color: "#ffffff",
+              border: "none",
+              borderRadius: "6px",
               fontWeight: 500,
-              cursor: !isConnected || isSubmitting ? 'not-allowed' : 'pointer',
+              cursor: !isConnected || isSubmitting ? "not-allowed" : "pointer",
             }}
           >
-            {isSubmitting ? 'Processing...' : 'Deposit'}
+            {isSubmitting ? "Processing..." : "Deposit"}
           </button>
         </form>
 
@@ -436,48 +534,105 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
           onSubmit={handleWithdraw}
           data-testid="withdraw-form"
           style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '12px',
-            padding: '20px',
-            border: '1px solid #e5e7eb',
-            borderRadius: '8px',
-            backgroundColor: '#ffffff',
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+            padding: "20px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "8px",
+            backgroundColor: "#ffffff",
           }}
         >
-          <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 600 }}>Withdraw Shares</h2>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '14px' }}>
+          <h2 style={{ margin: 0, fontSize: "18px", fontWeight: 600 }}>
+            Withdraw Shares
+          </h2>
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+              fontSize: "14px",
+            }}
+          >
             Shares
-            <input
-              type="text"
-              name="withdrawAmount"
-              placeholder="Enter positive integer shares"
-              value={withdrawAmount}
-              onChange={(e) => setWithdrawAmount(e.target.value)}
-              disabled={!isConnected || isSubmitting}
-              style={{
-                padding: '8px 12px',
-                border: '1px solid #d1d5db',
-                borderRadius: '6px',
-                fontSize: '14px',
-                outline: 'none',
-              }}
-            />
+            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+              <input
+                type="text"
+                name="withdrawAmount"
+                placeholder="Enter positive integer shares"
+                value={withdrawAmount}
+                onChange={(e) => setWithdrawAmount(e.target.value)}
+                disabled={!isConnected || isSubmitting}
+                style={{
+                  flex: 1,
+                  padding: "8px 12px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "6px",
+                  fontSize: "14px",
+                  outline: "none",
+                }}
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  setWithdrawAmount(
+                    shareBalance !== null ? shareBalance.toString() : "",
+                  )
+                }
+                disabled={
+                  !canWithdraw || shareBalance === null || shareBalance === 0n
+                }
+                style={{
+                  padding: "8px 10px",
+                  border: "1px solid #cbd5e1",
+                  borderRadius: "6px",
+                  backgroundColor:
+                    !canWithdraw || shareBalance === null || shareBalance === 0n
+                      ? "#e5e7eb"
+                      : "#ffffff",
+                  color: "#111827",
+                  fontWeight: 600,
+                  cursor:
+                    !canWithdraw || shareBalance === null || shareBalance === 0n
+                      ? "not-allowed"
+                      : "pointer",
+                }}
+              >
+                MAX
+              </button>
+            </div>
           </label>
           <button
             type="submit"
-            disabled={!isConnected || isSubmitting}
+            disabled={
+              !isConnected ||
+              isSubmitting ||
+              shareBalance === null ||
+              shareBalance === 0n
+            }
             style={{
-              padding: '10px 16px',
-              backgroundColor: !isConnected || isSubmitting ? '#9ca3af' : '#2563eb',
-              color: '#ffffff',
-              border: 'none',
-              borderRadius: '6px',
+              padding: "10px 16px",
+              backgroundColor:
+                !isConnected ||
+                isSubmitting ||
+                shareBalance === null ||
+                shareBalance === 0n
+                  ? "#9ca3af"
+                  : "#2563eb",
+              color: "#ffffff",
+              border: "none",
+              borderRadius: "6px",
               fontWeight: 500,
-              cursor: !isConnected || isSubmitting ? 'not-allowed' : 'pointer',
+              cursor:
+                !isConnected ||
+                isSubmitting ||
+                shareBalance === null ||
+                shareBalance === 0n
+                  ? "not-allowed"
+                  : "pointer",
             }}
           >
-            {isSubmitting ? 'Processing...' : 'Withdraw'}
+            {isSubmitting ? "Processing..." : "Withdraw"}
           </button>
         </form>
       </div>
