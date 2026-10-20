@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-import React, { useMemo, useState } from 'react';
-import { useBalance, useTransfer } from '../hooks';
-import { Alert } from '../components/Alert';
+import React, { useEffect, useMemo, useState } from "react";
+import { useBalance, useEstimateFee, useTransfer } from "../hooks";
+import { Alert } from "../components/Alert";
 
 export interface TransferScreenProps {
   /** Explicit connected wallet address (takes precedence over the adapter). */
@@ -23,6 +23,11 @@ export interface TransferScreenProps {
  * Reads the connected address and balance via `useBalance` and submits via
  * `useTransfer`, which signs with the connected wallet adapter configured on
  * the SDK client (no secret key field, no Soroban transaction assembly here).
+ *
+ * A MAX button fills the amount with the exact raw balance. Once the
+ * destination and amount are valid, `useEstimateFee` simulates the transfer to
+ * show the estimated XLM fee and whether the recipient account exists, before
+ * the wallet is asked to sign.
  */
 export const TransferScreen: React.FC<TransferScreenProps> = ({
   walletAddress,
@@ -32,11 +37,24 @@ export const TransferScreen: React.FC<TransferScreenProps> = ({
   className,
 }) => {
   const connectedAddress = walletAddress ?? adapterPublicKey;
-  const { data: balance, loading: balanceLoading } = useBalance(connectedAddress);
-  const { transfer, loading: transferLoading, error: transferError } = useTransfer();
+  const { data: balance, loading: balanceLoading } =
+    useBalance(connectedAddress);
+  const {
+    transfer,
+    loading: transferLoading,
+    error: transferError,
+  } = useTransfer();
 
-  const [destination, setDestination] = useState('');
-  const [amountText, setAmountText] = useState('');
+  const {
+    estimate,
+    reset: resetEstimate,
+    data: feeEstimate,
+    loading: feeLoading,
+    error: feeError,
+  } = useEstimateFee();
+
+  const [destination, setDestination] = useState("");
+  const [amountText, setAmountText] = useState("");
   const [txHash, setTxHash] = useState<string | null>(null);
 
   const amount = useMemo(() => {
@@ -51,13 +69,44 @@ export const TransferScreen: React.FC<TransferScreenProps> = ({
   const isPositiveInteger = amount !== null && amount > 0n;
   const overBalance =
     isPositiveInteger && balance !== null ? amount > balance : false;
+  const recipientMissing = feeEstimate?.recipientExists === false;
   const canSubmit =
     Boolean(connectedAddress) &&
     destination.trim().length > 0 &&
     isPositiveInteger &&
     !overBalance &&
+    !recipientMissing &&
     balance !== null &&
     !transferLoading;
+
+  const trimmedDestination = destination.trim();
+  const canEstimate =
+    Boolean(connectedAddress) &&
+    trimmedDestination.length > 0 &&
+    isPositiveInteger &&
+    !overBalance;
+
+  useEffect(() => {
+    if (!canEstimate || !connectedAddress || amount === null) {
+      resetEstimate();
+      return;
+    }
+    // Errors are surfaced through `feeError`.
+    void estimate(connectedAddress, trimmedDestination, amount).catch(
+      () => undefined,
+    );
+  }, [
+    canEstimate,
+    connectedAddress,
+    trimmedDestination,
+    amount,
+    estimate,
+    resetEstimate,
+  ]);
+
+  const handleMax = () => {
+    if (balance !== null) setAmountText(balance.toString());
+  };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -66,27 +115,37 @@ export const TransferScreen: React.FC<TransferScreenProps> = ({
     try {
       // No source Keypair is passed: the SDK client signs with the connected
       // wallet adapter, and the transfer moves from the connected address.
-      const result = await transfer(connectedAddress, destination.trim(), amount);
+      const result = await transfer(
+        connectedAddress,
+        destination.trim(),
+        amount,
+      );
       setTxHash(result.hash);
     } catch {
       // The hook already surfaced the error via `transferError`.
     }
   };
 
-  const format = (value: bigint) => (formatBalance ? formatBalance(value) : value.toString());
+  const format = (value: bigint) =>
+    formatBalance ? formatBalance(value) : value.toString();
 
   return (
-    <section className={className} style={{ display: 'grid', gap: 12, ...style }}>
+    <section
+      className={className}
+      style={{ display: "grid", gap: 12, ...style }}
+    >
       <div>
-        <h1 style={{ margin: '0 0 8px 0', fontSize: '24px', fontWeight: 700 }}>Transfer Tokens</h1>
-        <p style={{ margin: 0, color: '#4b5563', fontSize: '14px' }}>
+        <h1 style={{ margin: "0 0 8px 0", fontSize: "24px", fontWeight: 700 }}>
+          Transfer Tokens
+        </h1>
+        <p style={{ margin: 0, color: "#4b5563", fontSize: "14px" }}>
           Transfer tokens to a destination address.
         </p>
       </div>
       <div>
         <div>Connected address</div>
         <div data-testid="transfer-connected-address">
-          {connectedAddress ?? 'Not connected'}
+          {connectedAddress ?? "Not connected"}
         </div>
       </div>
 
@@ -95,15 +154,15 @@ export const TransferScreen: React.FC<TransferScreenProps> = ({
         <div data-testid="transfer-balance">
           {connectedAddress
             ? balanceLoading && balance === null
-              ? 'Loading…'
+              ? "Loading…"
               : balance !== null
                 ? format(balance)
-                : 'Unknown'
-            : '—'}
+                : "Unknown"
+            : "—"}
         </div>
       </div>
 
-      <form onSubmit={handleSubmit} style={{ display: 'grid', gap: 12 }}>
+      <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12 }}>
         <label htmlFor="transfer-destination">Destination address</label>
         <input
           id="transfer-destination"
@@ -115,15 +174,64 @@ export const TransferScreen: React.FC<TransferScreenProps> = ({
         />
 
         <label htmlFor="transfer-amount">Amount</label>
-        <input
-          id="transfer-amount"
-          name="amount"
-          type="text"
-          inputMode="numeric"
-          placeholder="Positive integer amount"
-          value={amountText}
-          onChange={(event) => setAmountText(event.target.value)}
-        />
+        <div style={{ display: "flex", gap: 8 }}>
+          <input
+            id="transfer-amount"
+            name="amount"
+            type="text"
+            inputMode="numeric"
+            placeholder="Positive integer amount"
+            value={amountText}
+            onChange={(event) => setAmountText(event.target.value)}
+            style={{ flex: 1 }}
+          />
+          <button
+            type="button"
+            onClick={handleMax}
+            disabled={balance === null || balance <= 0n}
+            data-testid="transfer-max"
+          >
+            MAX
+          </button>
+        </div>
+
+        {feeLoading ? (
+          <div data-testid="transfer-fee-loading">Estimating fee…</div>
+        ) : null}
+
+        {feeEstimate && !feeLoading ? (
+          <div data-testid="transfer-fee-breakdown">
+            <div>
+              Estimated fee:{" "}
+              <span data-testid="transfer-fee-xlm">{feeEstimate.feeXlm}</span>{" "}
+              XLM
+            </div>
+            <div data-testid="transfer-recipient-status">
+              Recipient account:{" "}
+              {feeEstimate.recipientExists ? "found" : "not found"}
+            </div>
+          </div>
+        ) : null}
+
+        {recipientMissing ? (
+          <Alert
+            variant="warning"
+            title="Recipient not found"
+            data-testid="transfer-recipient-missing"
+          >
+            The destination account does not exist on this network.
+          </Alert>
+        ) : null}
+
+        {feeError ? (
+          <Alert
+            variant="warning"
+            title="Fee estimate failed"
+            data-testid="transfer-fee-error"
+          >
+            {feeError.message}
+          </Alert>
+        ) : null}
 
         {overBalance ? (
           <Alert variant="warning" data-testid="transfer-over-balance">
@@ -132,19 +240,31 @@ export const TransferScreen: React.FC<TransferScreenProps> = ({
         ) : null}
 
         {transferError ? (
-          <Alert variant="danger" title="Transfer failed" data-testid="transfer-error">
+          <Alert
+            variant="danger"
+            title="Transfer failed"
+            data-testid="transfer-error"
+          >
             {transferError.message}
           </Alert>
         ) : null}
 
         {txHash ? (
-          <Alert variant="success" title="Transferred" data-testid="transfer-success">
+          <Alert
+            variant="success"
+            title="Transferred"
+            data-testid="transfer-success"
+          >
             Transaction hash: {txHash}
           </Alert>
         ) : null}
 
-        <button type="submit" disabled={!canSubmit} data-testid="transfer-submit">
-          {transferLoading ? 'Transferring…' : 'Transfer'}
+        <button
+          type="submit"
+          disabled={!canSubmit}
+          data-testid="transfer-submit"
+        >
+          {transferLoading ? "Transferring…" : "Transfer"}
         </button>
       </form>
     </section>

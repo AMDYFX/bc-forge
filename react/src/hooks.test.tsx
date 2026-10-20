@@ -10,6 +10,10 @@ const mockClient = {
   getContractId: jest.fn(),
   getAllowance: jest.fn(),
   approveProposal: jest.fn(),
+  hasRole: jest.fn(),
+  getLatestLedgerSequence: jest.fn(),
+  estimateTransferFee: jest.fn(),
+  accountExists: jest.fn(),
 };
 const mockVaultClient = {
   deposit: jest.fn(),
@@ -25,7 +29,11 @@ jest.mock("./context", () => ({
 
 import {
   clearTokenMetadataCache,
+  stroopsToXlm,
   useAllowance,
+  useEstimateFee,
+  useHasRole,
+  useLatestLedger,
   useProposalVote,
   useTokenMetadata,
   useVaultDeposit,
@@ -294,5 +302,103 @@ describe("React client hooks", () => {
     });
 
     expect(mockClient.approveProposal).not.toHaveBeenCalled();
+  });
+
+  describe("useHasRole (#1206)", () => {
+    it("resolves the role check for an address", async () => {
+      mockClient.hasRole.mockResolvedValue(true);
+      const { result } = renderHook(() =>
+        useHasRole("Minter" as never, "GADDR"),
+      );
+      await waitFor(() => expect(result.current.data).toBe(true));
+      expect(mockClient.hasRole).toHaveBeenCalledWith("Minter", "GADDR");
+    });
+
+    it("stays idle without an address and surfaces errors", async () => {
+      const idle = renderHook(() => useHasRole("Minter" as never, undefined));
+      expect(idle.result.current.data).toBeNull();
+      expect(mockClient.hasRole).not.toHaveBeenCalled();
+
+      mockClient.hasRole.mockRejectedValue(new Error("rpc down"));
+      const failed = renderHook(() => useHasRole("Minter" as never, "GADDR"));
+      await waitFor(() =>
+        expect(failed.result.current.error?.message).toBe("rpc down"),
+      );
+    });
+  });
+
+  describe("useLatestLedger (#1194)", () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    it("polls every 5s and stops on unmount", async () => {
+      mockClient.getLatestLedgerSequence
+        .mockResolvedValueOnce(100)
+        .mockResolvedValue(101);
+      const { result, unmount } = renderHook(() => useLatestLedger());
+      await act(async () => {});
+      expect(result.current.sequence).toBe(100);
+
+      await act(async () => {
+        jest.advanceTimersByTime(5000);
+      });
+      expect(result.current.sequence).toBe(101);
+      expect(result.current.observedAt).not.toBeNull();
+
+      unmount();
+      const calls = mockClient.getLatestLedgerSequence.mock.calls.length;
+      jest.advanceTimersByTime(20000);
+      expect(mockClient.getLatestLedgerSequence).toHaveBeenCalledTimes(calls);
+    });
+
+    it("keeps the last sequence and sets error on failure", async () => {
+      mockClient.getLatestLedgerSequence
+        .mockResolvedValueOnce(7)
+        .mockRejectedValueOnce(new Error("timeout"));
+      const { result } = renderHook(() =>
+        useLatestLedger({ pollIntervalMs: 0 }),
+      );
+      await act(async () => {});
+      expect(result.current.sequence).toBe(7);
+      await act(async () => {
+        await result.current.refetch();
+      });
+      expect(result.current.error?.message).toBe("timeout");
+      expect(result.current.sequence).toBe(7);
+    });
+  });
+
+  describe("useEstimateFee (#1214)", () => {
+    it("formats stroops as XLM", () => {
+      expect(stroopsToXlm(100n)).toBe("0.0000100");
+      expect(stroopsToXlm(12_345_678n)).toBe("1.2345678");
+    });
+
+    it("returns the fee and recipient status", async () => {
+      mockClient.estimateTransferFee.mockResolvedValue({ fee: "4242" });
+      mockClient.accountExists.mockResolvedValue(false);
+      const { result } = renderHook(() => useEstimateFee());
+      await act(async () => {
+        await result.current.estimate("GFROM", "GTO", 5n);
+      });
+      expect(result.current.data).toEqual({
+        feeStroops: 4242n,
+        feeXlm: "0.0004242",
+        recipientExists: false,
+      });
+    });
+
+    it("surfaces simulation errors", async () => {
+      mockClient.estimateTransferFee.mockRejectedValue(new Error("sim failed"));
+      mockClient.accountExists.mockResolvedValue(true);
+      const { result } = renderHook(() => useEstimateFee());
+      await act(async () => {
+        await result.current
+          .estimate("GFROM", "GTO", 5n)
+          .catch(() => undefined);
+      });
+      expect(result.current.error?.message).toBe("sim failed");
+      expect(result.current.data).toBeNull();
+    });
   });
 });

@@ -7,6 +7,7 @@ import {
   useWallet,
 } from "./context";
 import type { Keypair } from "@stellar/stellar-sdk";
+import type { Role } from "@bc-forge/sdk";
 import type {
   bcForgeClient,
   TransactionResult,
@@ -884,4 +885,177 @@ export function useProposalVoting() {
   );
 
   return { approve, execute, pendingId, error, available: client !== null };
+}
+
+// ─── Role check (#1206) ─────────────────────────────────────────────────────
+
+/**
+ * Hook that checks whether `address` holds `role` on-chain.
+ *
+ * `data` is `null` until resolved (or while `address` is undefined). Errors
+ * are surfaced via `error` rather than thrown.
+ *
+ * @param role - Role to check (e.g. `Role.Minter`)
+ * @param address - Account to check; the hook is idle when undefined
+ */
+export function useHasRole(role: Role, address: string | undefined) {
+  const client = useBcForgeClient();
+  const [data, setData] = useState<boolean | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const check = useCallback(async () => {
+    if (!address) {
+      setData(null);
+      return;
+    }
+    try {
+      setLoading(true);
+      setError(null);
+      setData(await client.hasRole(role, address));
+    } catch (err) {
+      setData(null);
+      setError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      setLoading(false);
+    }
+  }, [client, role, address]);
+
+  useEffect(() => {
+    void check();
+  }, [check]);
+
+  return { data, loading, error, refetch: check };
+}
+
+// ─── Latest ledger (#1194) ──────────────────────────────────────────────────
+
+/** Default {@link useLatestLedger} polling interval (~one ledger close). */
+export const LATEST_LEDGER_POLL_MS = 5000;
+
+/** Options for {@link useLatestLedger}. */
+export interface UseLatestLedgerOptions {
+  /** Polling interval in ms (default 5000). Non-positive disables polling. */
+  pollIntervalMs?: number;
+}
+
+/**
+ * Hook polling the Soroban RPC for the latest ledger sequence.
+ *
+ * `sequence` is the current ledger number; `observedAt` is the epoch-ms time
+ * the sequence last advanced as seen by this hook, which lets callers estimate
+ * time-to-inclusion. Polling stops on unmount; `refetch` triggers a manual
+ * poll. Fetch failures set `error` and keep the last known sequence.
+ */
+export function useLatestLedger(options: UseLatestLedgerOptions = {}) {
+  const { pollIntervalMs = LATEST_LEDGER_POLL_MS } = options;
+  const client = useBcForgeClient();
+  const [sequence, setSequence] = useState<number | null>(null);
+  const [observedAt, setObservedAt] = useState<number | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const mountedRef = useRef(true);
+  const lastSequenceRef = useRef<number | null>(null);
+
+  const refetch = useCallback(async () => {
+    try {
+      const next = await client.getLatestLedgerSequence();
+      if (!mountedRef.current) return;
+      if (next !== lastSequenceRef.current) {
+        lastSequenceRef.current = next;
+        setSequence(next);
+        setObservedAt(Date.now());
+      }
+      setError(null);
+    } catch (err) {
+      if (mountedRef.current) {
+        setError(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
+  }, [client]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    void refetch();
+    if (pollIntervalMs <= 0) {
+      return () => {
+        mountedRef.current = false;
+      };
+    }
+    const timer = setInterval(() => {
+      void refetch();
+    }, pollIntervalMs);
+    return () => {
+      mountedRef.current = false;
+      clearInterval(timer);
+    };
+  }, [refetch, pollIntervalMs]);
+
+  return { sequence, observedAt, error, refetch };
+}
+
+// ─── Transfer fee estimate (#1214) ──────────────────────────────────────────
+
+/** Result of a transfer pre-flight simulation. */
+export interface FeeEstimate {
+  /** Estimated resource fee in stroops. */
+  feeStroops: bigint;
+  /** Estimated resource fee in XLM (7 decimals). */
+  feeXlm: string;
+  /** Whether the recipient account exists on the network. */
+  recipientExists: boolean;
+}
+
+/** Formats stroops as an XLM decimal string. */
+export function stroopsToXlm(stroops: bigint): string {
+  const whole = stroops / 10_000_000n;
+  const frac = (stroops % 10_000_000n).toString().padStart(7, "0");
+  return `${whole}.${frac}`;
+}
+
+/**
+ * Hook that simulates a transfer before signing, returning the estimated fee
+ * and whether the recipient exists. Call `estimate` explicitly; it never
+ * submits a transaction.
+ */
+export function useEstimateFee() {
+  const client = useBcForgeClient();
+  const [data, setData] = useState<FeeEstimate | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const estimate = useCallback(
+    async (from: string, to: string, amount: bigint) => {
+      try {
+        setLoading(true);
+        setError(null);
+        const [dry, recipientExists] = await Promise.all([
+          client.estimateTransferFee(from, to, amount),
+          client.accountExists(to),
+        ]);
+        const feeStroops = BigInt(dry.fee);
+        const result: FeeEstimate = {
+          feeStroops,
+          feeXlm: stroopsToXlm(feeStroops),
+          recipientExists,
+        };
+        setData(result);
+        return result;
+      } catch (err) {
+        const normalized = err instanceof Error ? err : new Error(String(err));
+        setData(null);
+        setError(normalized);
+        throw normalized;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [client],
+  );
+
+  const reset = useCallback(() => {
+    setData(null);
+    setError(null);
+  }, []);
+
+  return { estimate, reset, data, loading, error };
 }
