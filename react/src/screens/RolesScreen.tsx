@@ -206,7 +206,7 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
               event !== null,
           );
         if (!cancelled) setAuditEvents(parsed);
-      } catch (err) {
+      } catch {
         if (!cancelled) setAuditEvents([]);
       } finally {
         if (!cancelled) setAuditLoading(false);

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 import "@testing-library/jest-dom";
-import React from "react";
 import { act, render, renderHook, screen } from "@testing-library/react";
 import {
   TransactionHistory,
@@ -78,7 +77,8 @@ describe("useSessionTransactions", () => {
       "one",
       "two",
     ]);
-    expect(result.current.transactions[0].amount).toBe("9");
+    const [newest] = result.current.transactions;
+    expect(newest?.amount).toBe("9");
 
     const again = renderHook(() => useSessionTransactions());
     expect(again.result.current.transactions).toHaveLength(2);

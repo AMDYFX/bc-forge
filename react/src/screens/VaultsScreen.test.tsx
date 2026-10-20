@@ -142,6 +142,48 @@ describe("VaultsScreen", () => {
     expect(withdrawBtn).toBeDisabled();
   });
 
+  it("shows a live preview of the estimated vault shares for a deposit", async () => {
+    (calculateApy as jest.Mock).mockResolvedValue(null);
+
+    render(<VaultsScreen client={mockClient} walletAdapter={mockAdapter} />);
+
+    const depositInput = screen.getByPlaceholderText(
+      /enter positive integer amount/i,
+    );
+    fireEvent.change(depositInput, { target: { value: "500" } });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/you will receive ~250 vault shares/i),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("fills the withdraw input with the connected share balance when MAX is clicked and blocks oversized withdrawals", async () => {
+    (calculateApy as jest.Mock).mockResolvedValue(null);
+
+    render(<VaultsScreen client={mockClient} walletAdapter={mockAdapter} />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("share-balance")).toHaveTextContent("100");
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^max$/i }));
+    expect(
+      screen.getByPlaceholderText(/enter positive integer shares/i),
+    ).toHaveValue("100");
+
+    fireEvent.change(
+      screen.getByPlaceholderText(/enter positive integer shares/i),
+      { target: { value: "101" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^withdraw$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Withdraw amount cannot exceed your available shares",
+    );
+  });
+
   it("submitting a valid deposit calls VaultClient.deposit exactly once", async () => {
     (calculateApy as jest.Mock).mockResolvedValue(null);
 
