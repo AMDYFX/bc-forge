@@ -116,3 +116,44 @@ test.describe('TransferScreen Balance & Transfers Flow (#1253)', () => {
     expect(accessibilityScanResults.violations).toEqual([]);
   });
 });
+
+*/
+test.describe('RolesScreen Inspection & Badge Matrix Flow (#1255)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/admin/roles');
+    await page.waitForLoadState('domcontentloaded');
+  });
+
+  test('should accept target address input and verify debounced role badge matrix statuses', async ({ page }) => {
+    // 1. Locate address input field
+    const addressInput = page.locator('input[name="targetAddress"], [data-testid="target-address-input"]');
+    await expect(addressInput).toBeVisible();
+
+    // 2. Enter valid test Stellar public address
+    const testAddress = 'GBZXN7GNHQGNZROXYFA6W24Y4P73X26Y3J3XY6S3JZ6DYZN3X7Y2X3Y';
+    await addressInput.fill(testAddress);
+
+    // 3. Assert debounced fetch populates role matrix badges
+    const adminBadge = page.locator('[data-testid="badge-admin"], text=Admin');
+    const superAdminBadge = page.locator('[data-testid="badge-superadmin"], text=SuperAdmin');
+    const minterBadge = page.locator('[data-testid="badge-minter"], text=Minter');
+    const pauserBadge = page.locator('[data-testid="badge-pauser"], text=Pauser');
+
+    await expect(adminBadge).toBeVisible({ timeout: 10000 });
+    await expect(superAdminBadge).toBeVisible();
+    await expect(minterBadge).toBeVisible();
+    await expect(pauserBadge).toBeVisible();
+  });
+
+  test('should pass automated WCAG 2.1 AA accessibility audit on RolesScreen', async ({ page }) => {
+    const accessibilityScanResults = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+      .analyze();
+
+    if (accessibilityScanResults.violations.length > 0) {
+      console.error('Accessibility violations found on RolesScreen:', JSON.stringify(accessibilityScanResults.violations, null, 2));
+    }
+
+    expect(accessibilityScanResults.violations).toEqual([]);
+  });
+});
