@@ -444,8 +444,19 @@ type WalletConnectionData =
     };
 
 type WalletMachineState =
-  | { status: "disconnected"; adapter: null; error: null }
-  | { status: "connecting"; adapter: null; wallet: WalletName; error: null }
+  | {
+      status: "disconnected";
+      adapter: null;
+      error: null;
+      isHardwareWallet?: boolean;
+    }
+  | {
+      status: "connecting";
+      adapter: null;
+      wallet: WalletName;
+      error: null;
+      isHardwareWallet?: boolean;
+    }
   | {
       status: "connected";
       adapter: WalletAdapter;
@@ -468,6 +479,7 @@ type WalletMachineState =
       adapter: WalletAdapter | null;
       wallet: WalletName | null;
       error: Error;
+      isHardwareWallet?: boolean;
     };
 
 type WalletMachineAction =
@@ -477,6 +489,7 @@ type WalletMachineAction =
       wallet: WalletName;
       adapter: WalletAdapter;
       publicKey: string;
+      isHardwareWallet?: boolean;
     }
   | {
       type: "wrong-network";
@@ -511,6 +524,7 @@ function walletReducer(
         adapter: null,
         wallet: action.wallet,
         error: null,
+        isHardwareWallet: false,
       };
     case "connected":
       return {
@@ -597,6 +611,11 @@ export interface WalletConnectionActions {
   connect: (wallet: WalletName) => Promise<void>;
   /** Disconnect the current wallet and clear the client's signer. */
   disconnect: () => Promise<void>;
+  /** Helper to execute signing with appropriate hardware/software timeout. */
+  signWithTimeout?: <T>(
+    signAction: () => Promise<T>,
+    customTimeoutMs?: number,
+  ) => Promise<T>;
   /**
    * Connect to `wallet`, first making Albedo available (#1170) when the intent
    * script has not been loaded yet, and re-probing afterwards so the picker
@@ -634,7 +653,13 @@ export interface WalletDetectionActions {
 /** Full discriminated wallet state and actions returned by {@link useWallet}. */
 export type WalletConnectionState = WalletConnectionData &
   WalletConnectionActions &
-  WalletDetectionActions;
+  WalletDetectionActions & {
+    isHardwareWallet: boolean;
+    signWithTimeout: <T>(
+      signAction: () => Promise<T>,
+      customTimeoutMs?: number,
+    ) => Promise<T>;
+  };
 
 interface WalletContextType
   extends WalletConnectionActions, WalletDetectionActions {
@@ -643,6 +668,7 @@ interface WalletContextType
   connected: boolean;
   publicKey: string | null;
   error: Error | null;
+  isHardwareWallet?: boolean;
 }
 
 const walletContext = createContext<WalletContextType>({
@@ -815,6 +841,7 @@ const WalletMachine: React.FC<WalletProviderProps> = ({
           wallet,
           adapter,
           publicKey: adapter.publicKey,
+          isHardwareWallet,
         });
       } catch (err) {
         if (attempt !== connectAttempt.current) return;
@@ -1100,8 +1127,24 @@ export function useWallet(): WalletConnection {
     };
   }
 
+  const isHardwareWallet = Boolean(
+    (context.state.status === "connected" && context.state.isHardwareWallet) ||
+      (adapter as any)?.isHardwareWallet,
+  );
+
+  const signWithTimeout = useCallback(
+    <T,>(signAction: () => Promise<T>, customTimeoutMs?: number) =>
+      signWithHardwareTimeout(signAction, {
+        isHardwareWallet,
+        timeoutMs: customTimeoutMs,
+      }),
+    [isHardwareWallet],
+  );
+
   return {
     ...state,
+    isHardwareWallet,
+    signWithTimeout,
     connect: context.connect,
     disconnect: context.disconnect,
     connectWallet: context.connectWallet,
