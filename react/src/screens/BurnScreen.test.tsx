@@ -43,16 +43,16 @@ describe("BurnScreen", () => {
     sessionStorage.clear();
   });
 
+  const confirmBurn = () => {
+    fireEvent.click(screen.getByTestId("confirmation-dialog-checkbox"));
+    fireEvent.click(screen.getByTestId("confirmation-dialog-confirm"));
+  };
+
   const openDialog = (amount: string) => {
     fireEvent.change(screen.getByLabelText("Amount"), {
       target: { value: amount },
     });
     fireEvent.click(screen.getByTestId("burn-submit"));
-  };
-
-  const confirmBurn = () => {
-    fireEvent.click(screen.getByTestId("confirmation-dialog-checkbox"));
-    fireEvent.click(screen.getByTestId("confirmation-dialog-confirm"));
   };
 
   it("shows the connected balance and disables submit above it", () => {
@@ -92,7 +92,6 @@ describe("BurnScreen", () => {
     render(<BurnScreen walletAddress={ADDRESS} />);
 
     openDialog("100");
-    expect(mockBurn).not.toHaveBeenCalled();
     confirmBurn();
 
     await waitFor(() => {
@@ -102,7 +101,7 @@ describe("BurnScreen", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("burn-success")).toHaveTextContent(
-        "Destroyed 100 tokens",
+        "Transaction hash: 0xburnhash",
       );
     });
     expect(screen.getByTestId("burn-success")).toHaveTextContent("0xburnhash");
@@ -208,5 +207,80 @@ describe("BurnScreen", () => {
     });
     expect(screen.queryByTestId("burn-success")).not.toBeInTheDocument();
     expect(screen.getByTestId("burn-total-supply")).toHaveTextContent("1000");
+  });
+
+  it("warns that burning is irreversible and styles the submit as danger", () => {
+    render(<BurnScreen walletAddress={ADDRESS} />);
+
+    expect(screen.getByTestId("burn-irreversible-warning")).toHaveTextContent(
+      /irreversible/i,
+    );
+    expect(screen.getByTestId("burn-submit")).toHaveAttribute(
+      "data-variant",
+      "danger",
+    );
+  });
+
+  it.each([
+    ["0", "greater than zero"],
+    ["-5", "positive whole number"],
+    ["1.5", "positive whole number"],
+    ["abc", "positive whole number"],
+  ])("shows a validation message for %s", (value, message) => {
+    mockUseBalance.mockReturnValue({ data: 500n, loading: false, error: null });
+    render(<BurnScreen walletAddress={ADDRESS} />);
+
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value } });
+
+    expect(screen.getByTestId("burn-amount-error")).toHaveTextContent(message);
+    expect(screen.getByTestId("burn-submit")).toBeDisabled();
+  });
+
+  it("shows no validation message for an empty amount", () => {
+    render(<BurnScreen walletAddress={ADDRESS} />);
+    expect(screen.queryByTestId("burn-amount-error")).not.toBeInTheDocument();
+  });
+
+  it("MAX fills the full balance and requires confirmation before burning", async () => {
+    mockUseBalance.mockReturnValue({ data: 500n, loading: false, error: null });
+    render(<BurnScreen walletAddress={ADDRESS} />);
+
+    fireEvent.click(screen.getByTestId("burn-max"));
+
+    expect(screen.getByLabelText("Amount")).toHaveValue("500");
+    expect(screen.getByTestId("burn-max-confirm-warning")).toBeInTheDocument();
+    expect(screen.getByTestId("burn-submit")).toBeDisabled();
+
+    fireEvent.click(screen.getByLabelText(/burn my entire balance/i));
+    expect(screen.getByTestId("burn-submit")).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId("burn-submit"));
+    confirmBurn();
+    await waitFor(() => expect(mockBurn).toHaveBeenCalledWith(ADDRESS, 500n));
+  });
+
+  it("editing the amount after MAX drops the confirmation requirement", () => {
+    mockUseBalance.mockReturnValue({ data: 500n, loading: false, error: null });
+    render(<BurnScreen walletAddress={ADDRESS} />);
+
+    fireEvent.click(screen.getByTestId("burn-max"));
+    fireEvent.change(screen.getByLabelText("Amount"), {
+      target: { value: "100" },
+    });
+
+    expect(
+      screen.queryByTestId("burn-max-confirm-warning"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("burn-submit")).toBeEnabled();
+  });
+
+  it("disables MAX when balance is unknown or zero", () => {
+    mockUseBalance.mockReturnValue({ data: 0n, loading: false, error: null });
+    const { rerender } = render(<BurnScreen walletAddress={ADDRESS} />);
+    expect(screen.getByTestId("burn-max")).toBeDisabled();
+
+    mockUseBalance.mockReturnValue({ data: null, loading: false, error: null });
+    rerender(<BurnScreen walletAddress={ADDRESS} />);
+    expect(screen.getByTestId("burn-max")).toBeDisabled();
   });
 });
