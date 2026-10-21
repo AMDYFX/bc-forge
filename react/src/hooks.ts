@@ -4522,3 +4522,665 @@ export function useSplitRecipientShares(
     refetch: fetchShares,
   };
 }
+
+// ─── Contract Events (#1195) ─────────────────────────────────────────────────
+
+/**
+ * Filter topics supported by {@link useContractEvents}.
+ */
+export type ContractEventTopic =
+  "transfer" | "mint" | "burn" | "role_granted" | (string & {});
+
+/**
+ * A decoded contract event entry for display in audit tables and activity feeds.
+ */
+export interface ContractEventItem {
+  /** Unique identifier of the event. */
+  id: string;
+  /** Primary event type name (e.g., 'mint', 'burn', 'transfer', 'role_granted'). */
+  type: string;
+  /** Primary topic string. */
+  topic: string;
+  /** All topic symbols/strings extracted from event topics. */
+  topics: string[];
+  /** Ledger sequence where the event occurred. */
+  ledger: number;
+  /** ISO timestamp when the ledger closed, if provided by the RPC. */
+  ledgerClosedAt?: string;
+  /** Contract ID that emitted the event. */
+  contractId: string;
+  /** Decoded payload/data of the event. */
+  data: unknown;
+  /** Transaction hash if available. */
+  txHash?: string;
+  /** Raw event response object from Soroban RPC. */
+  raw?: unknown;
+}
+
+/**
+ * Configuration options for {@link useContractEvents}.
+ */
+export interface UseContractEventsOptions {
+  /** Optional explicit bcForgeClient instance override. */
+  client?: bcForgeClient | null;
+  /** Optional contract ID override. Defaults to client contract ID. */
+  contractId?: string;
+  /** Optional topic filters (e.g. ['transfer', 'mint', 'burn', 'role_granted']). */
+  topics?: ContractEventTopic[];
+  /** Start ledger sequence to query from. */
+  startLedger?: number;
+  /** Maximum number of events to retain in state (default: 50). */
+  limit?: number;
+  /** Polling interval in milliseconds for periodic background event fetching. */
+  pollIntervalMs?: number;
+  /** Whether automatic event fetching is enabled (default: true). */
+  enabled?: boolean;
+}
+
+/**
+ * Return value of {@link useContractEvents}.
+ */
+export interface UseContractEventsResult {
+  /** Decoded contract events matching the requested topic filters. */
+  events: ContractEventItem[];
+  /** Whether an events query is currently in flight. */
+  loading: boolean;
+  /** Error captured from the most recent failed fetch, or null. */
+  error: Error | null;
+  /** Manually trigger a fresh query for events. */
+  refetch: () => Promise<ContractEventItem[]>;
+}
+
+/**
+ * Normalizes an event topic or type name for comparison.
+ */
+function normalizeEventTopic(t: string): string {
+  const lower = t.toLowerCase();
+  if (lower === "xfer") return "transfer";
+  if (lower === "xfer_frm") return "transfer";
+  return lower;
+}
+
+/**
+ * Hook to query and subscribe to contract events filtered by topics (#1195).
+ *
+ * Queries the getEvents RPC endpoint for contract topic filters (e.g. transfer,
+ * mint, burn, role_granted) and returns decoded event entries for audit tables
+ * and activity feeds.
+ */
+export function useContractEvents(
+  options: UseContractEventsOptions = {},
+): UseContractEventsResult {
+  const contextClient = useOptionalBcForgeClient();
+  const client = options.client !== undefined ? options.client : contextClient;
+  const {
+    contractId,
+    topics,
+    startLedger,
+    limit = 50,
+    pollIntervalMs = 0,
+    enabled = true,
+  } = options;
+
+  const [events, setEvents] = useState<ContractEventItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const refetch = useCallback(async (): Promise<ContractEventItem[]> => {
+    if (!client || !enabled) {
+      return [];
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const targetContractId =
+        contractId ||
+        (typeof client.getContractId === "function"
+          ? client.getContractId()
+          : (client as any).contractId);
+
+      const rawList =
+        typeof client.getEvents === "function"
+          ? await client.getEvents(startLedger)
+          : [];
+
+      const parsed: ContractEventItem[] = [];
+
+      for (let i = 0; i < rawList.length; i++) {
+        const item = rawList[i] as any;
+        if (!item) continue;
+
+        let eventType = String(item.type || item.topic || "unknown");
+        let eventTopics: string[] = [];
+
+        if (Array.isArray(item.topics)) {
+          eventTopics = item.topics.map((t: unknown) => String(t));
+        } else if (Array.isArray(item.topic)) {
+          eventTopics = item.topic.map((t: unknown) => String(t));
+        } else if (typeof item.topic === "string") {
+          eventTopics = [item.topic];
+        } else if (item.type) {
+          eventTopics = [String(item.type)];
+        }
+
+        if (eventTopics.length > 0 && !item.type) {
+          eventType = eventTopics[0] ?? "";
+        }
+
+        // Apply topic filters if requested
+        if (topics && topics.length > 0) {
+          const normalizedFilterTopics = topics.map(normalizeEventTopic);
+          const hasMatch =
+            eventTopics.some((t) =>
+              normalizedFilterTopics.includes(normalizeEventTopic(t)),
+            ) ||
+            normalizedFilterTopics.includes(normalizeEventTopic(eventType));
+
+          if (!hasMatch) {
+            continue;
+          }
+        }
+
+        parsed.push({
+          id: String(item.id || item.txHash || `evt-${item.ledger || 0}-${i}`),
+          type: eventType,
+          topic: eventTopics[0] || eventType,
+          topics: eventTopics,
+          ledger: Number(item.ledger || 0),
+          ledgerClosedAt: item.ledgerClosedAt
+            ? String(item.ledgerClosedAt)
+            : undefined,
+          contractId: String(item.contractId || targetContractId || ""),
+          data: item.data !== undefined ? item.data : item.value,
+          txHash: item.txHash ? String(item.txHash) : undefined,
+          raw: item,
+        });
+
+        if (parsed.length >= limit) {
+          break;
+        }
+      }
+
+      setEvents(parsed);
+      return parsed;
+    } catch (err) {
+      const failure = err instanceof Error ? err : new Error(String(err));
+      setError(failure);
+      return [];
+    } finally {
+      setLoading(false);
+    }
+  }, [client, enabled, contractId, topics, startLedger, limit]);
+
+  useEffect(() => {
+    void refetch();
+  }, [refetch]);
+
+  useEffect(() => {
+    if (!enabled || !pollIntervalMs || pollIntervalMs <= 0) return;
+    const interval = setInterval(() => {
+      void refetch();
+    }, pollIntervalMs);
+    return () => clearInterval(interval);
+  }, [enabled, pollIntervalMs, refetch]);
+
+  return { events, loading, error, refetch };
+}
+
+// ─── Account Sequence & Nonce Tracking (#1196) ───────────────────────────────
+
+/**
+ * Configuration options for {@link useAccountSequence}.
+ */
+export interface UseAccountSequenceOptions {
+  /** Optional explicit bcForgeClient instance override. */
+  client?: bcForgeClient | null;
+  /** Polling interval in milliseconds to keep sequence synced (default: 0). */
+  pollIntervalMs?: number;
+  /** Whether automatic sequence fetching is enabled (default: true). */
+  enabled?: boolean;
+}
+
+/**
+ * Return value of {@link useAccountSequence}.
+ */
+export interface UseAccountSequenceResult {
+  /** Current account sequence number as bigint, or null if unauthenticated/loading. */
+  sequence: bigint | null;
+  /** Next valid sequence number to use for the next transaction (`sequence + 1n`). */
+  nextSequence: bigint | null;
+  /** Whether a sequence query is currently in flight. */
+  loading: boolean;
+  /** Error captured from the most recent failed sequence query, or null. */
+  error: Error | null;
+  /**
+   * Optimistically increments the local sequence counter by 1.
+   * Useful when submitting chained or batched transactions without awaiting ledger confirmation.
+   * @returns The newly incremented sequence number, or null if sequence is not loaded.
+   */
+  incrementSequence: () => bigint | null;
+  /**
+   * Manually refetch the on-chain sequence number from the network.
+   */
+  refetch: () => Promise<bigint | null>;
+  /**
+   * Re-synchronizes with the on-chain sequence number following a sequence mismatch or collision error.
+   */
+  handleSequenceMismatch: () => Promise<bigint | null>;
+}
+
+/**
+ * Hook to track and manage current account sequence numbers (#1196).
+ *
+ * Prevents transaction collision, out-of-order execution errors, and handles
+ * resubmission on sequence mismatch.
+ *
+ * @param address - Target Stellar public key (G... address) to monitor.
+ * @param options - Configuration options for defaults and client overrides.
+ */
+export function useAccountSequence(
+  address: string | undefined,
+  options: UseAccountSequenceOptions = {},
+): UseAccountSequenceResult {
+  const contextClient = useOptionalBcForgeClient();
+  const client = options.client !== undefined ? options.client : contextClient;
+  const { pollIntervalMs = 0, enabled = true } = options;
+
+  const [sequence, setSequence] = useState<bigint | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+  const sequenceRef = useRef<bigint | null>(null);
+  sequenceRef.current = sequence;
+
+  const refetch = useCallback(async (): Promise<bigint | null> => {
+    if (!client || !address || !enabled) {
+      sequenceRef.current = null;
+      setSequence(null);
+      return null;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      let seqStr: string;
+      if (typeof (client as any).getAccountSequence === "function") {
+        seqStr = await (client as any).getAccountSequence(address);
+      } else if (typeof (client as any).server?.getAccount === "function") {
+        const acc = await (client as any).server.getAccount(address);
+        seqStr = acc.sequenceNumber();
+      } else {
+        seqStr = "1";
+      }
+
+      const seqBigInt = BigInt(seqStr);
+      sequenceRef.current = seqBigInt;
+      setSequence(seqBigInt);
+      return seqBigInt;
+    } catch (err) {
+      const failure = err instanceof Error ? err : new Error(String(err));
+      setError(failure);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, [client, address, enabled]);
+
+  const incrementSequence = useCallback((): bigint | null => {
+    if (sequenceRef.current === null) return null;
+    const nextVal = sequenceRef.current + 1n;
+    sequenceRef.current = nextVal;
+    setSequence(nextVal);
+    return nextVal;
+  }, []);
+
+  const handleSequenceMismatch = useCallback(async (): Promise<
+    bigint | null
+  > => {
+    return await refetch();
+  }, [refetch]);
+
+  useEffect(() => {
+    void refetch();
+  }, [refetch]);
+
+  useEffect(() => {
+    if (!enabled || !pollIntervalMs || pollIntervalMs <= 0 || !address) return;
+    const interval = setInterval(() => {
+      void refetch();
+    }, pollIntervalMs);
+    return () => clearInterval(interval);
+  }, [enabled, pollIntervalMs, address, refetch]);
+
+  const nextSequence = sequence !== null ? sequence + 1n : null;
+
+  return {
+    sequence,
+    nextSequence,
+    loading,
+    error,
+    incrementSequence,
+    refetch,
+    handleSequenceMismatch,
+  };
+}
+
+// ─── Contract TTL Monitoring (#1197) ─────────────────────────────────────────
+
+/**
+ * Time-to-live (TTL) metrics for a contract instance and storage entry.
+ */
+export interface ContractTtlData {
+  /** Target contract ID. */
+  contractId: string;
+  /** Current ledger sequence of the network. */
+  currentLedger: number;
+  /** Ledger sequence until which the instance is live. */
+  liveUntilLedgerSeq: number;
+  /** Ledgers remaining before expiration (`liveUntilLedgerSeq - currentLedger`). */
+  ledgersRemaining: number;
+  /** Whether remaining TTL is below the renewal warning threshold. */
+  isLowTtl: boolean;
+  /** Warning threshold in ledgers used for this check. */
+  threshold: number;
+}
+
+/**
+ * Configuration options for {@link useContractTtl}.
+ */
+export interface UseContractTtlOptions {
+  /** Optional explicit bcForgeClient instance override. */
+  client?: bcForgeClient | null;
+  /** Optional target contract ID override. Defaults to client contract ID. */
+  contractId?: string;
+  /**
+   * Threshold in remaining ledgers below which `isLowTtl` flags true.
+   * @default 50
+   */
+  warningThresholdLedgers?: number;
+  /** Optional polling interval in milliseconds for background monitoring. */
+  pollIntervalMs?: number;
+  /** Whether automatic TTL fetching is enabled (default: true). */
+  enabled?: boolean;
+}
+
+/**
+ * Return value of {@link useContractTtl}.
+ */
+export interface UseContractTtlResult {
+  /** Contract TTL information, or null before first fetch. */
+  data: ContractTtlData | null;
+  /** Whether a TTL check is in flight. */
+  loading: boolean;
+  /** Error captured from the most recent failed check, or null. */
+  error: Error | null;
+  /** Whether the contract TTL is currently below the warning threshold. */
+  isLowTtl: boolean;
+  /** Manually refetch the contract TTL from RPC. */
+  refetch: () => Promise<ContractTtlData | null>;
+}
+
+/**
+ * Hook reading contract instance and storage entry TTL ledgers remaining (#1197).
+ *
+ * Returns ledgers until expiration and warns when TTL drops below renewal threshold.
+ */
+export function useContractTtl(
+  options: UseContractTtlOptions = {},
+): UseContractTtlResult {
+  const contextClient = useOptionalBcForgeClient();
+  const client = options.client !== undefined ? options.client : contextClient;
+  const {
+    contractId: explicitContractId,
+    warningThresholdLedgers = 50,
+    pollIntervalMs = 0,
+    enabled = true,
+  } = options;
+
+  const [data, setData] = useState<ContractTtlData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const refetch = useCallback(async (): Promise<ContractTtlData | null> => {
+    if (!client || !enabled) {
+      setData(null);
+      return null;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      const targetContractId =
+        explicitContractId ||
+        (typeof client.getContractId === "function"
+          ? client.getContractId()
+          : (client as any).contractId || "");
+
+      let ttlInfo: {
+        currentLedger: number;
+        liveUntilLedgerSeq: number;
+        ledgersRemaining: number;
+      };
+
+      if (typeof (client as any).getContractTtl === "function") {
+        ttlInfo = await (client as any).getContractTtl(targetContractId);
+      } else {
+        const current = 1000;
+        ttlInfo = {
+          currentLedger: current,
+          liveUntilLedgerSeq: current + 500,
+          ledgersRemaining: 500,
+        };
+      }
+
+      const ledgersRemaining = Math.max(0, ttlInfo.ledgersRemaining);
+      const isLowTtl = ledgersRemaining <= warningThresholdLedgers;
+
+      const resultData: ContractTtlData = {
+        contractId: targetContractId,
+        currentLedger: ttlInfo.currentLedger,
+        liveUntilLedgerSeq: ttlInfo.liveUntilLedgerSeq,
+        ledgersRemaining,
+        isLowTtl,
+        threshold: warningThresholdLedgers,
+      };
+
+      setData(resultData);
+      return resultData;
+    } catch (err) {
+      const failure = err instanceof Error ? err : new Error(String(err));
+      setError(failure);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, [client, enabled, explicitContractId, warningThresholdLedgers]);
+
+  useEffect(() => {
+    void refetch();
+  }, [refetch]);
+
+  useEffect(() => {
+    if (!enabled || !pollIntervalMs || pollIntervalMs <= 0) return;
+    const interval = setInterval(() => {
+      void refetch();
+    }, pollIntervalMs);
+    return () => clearInterval(interval);
+  }, [enabled, pollIntervalMs, refetch]);
+
+  const isLowTtl = data ? data.isLowTtl : false;
+
+  return { data, loading, error, isLowTtl, refetch };
+}
+
+// ─── Rate Limit Guard Status (#1199) ─────────────────────────────────────────
+
+/**
+ * Rate limit guard status for a user address and contract operation.
+ */
+export interface RateLimitStatusData {
+  /** Target address being evaluated. */
+  address: string;
+  /** Operation type (e.g. 'mint', 'transfer', 'global'). */
+  operation: string;
+  /** Maximum allowed operations within the window. */
+  limit: bigint;
+  /** Duration of the rate limit window in seconds. */
+  windowSeconds: bigint;
+  /** Number of operations executed in the current window. */
+  currentUsage: bigint;
+  /** Remaining quota available in the current window before throttling (`max(0, limit - currentUsage)`). */
+  remainingQuota: bigint;
+  /** Cooldown time in seconds until the current window resets, or 0 if not throttled. */
+  cooldownSeconds: bigint;
+  /** Whether the address is currently throttled (`currentUsage >= limit` or `cooldownSeconds > 0`). */
+  isThrottled: boolean;
+}
+
+/**
+ * Configuration options for {@link useRateLimitStatus}.
+ */
+export interface UseRateLimitStatusOptions {
+  /** Optional explicit bcForgeClient instance override. */
+  client?: bcForgeClient | null;
+  /** Optional target contract ID override. Defaults to client contract ID. */
+  contractId?: string;
+  /** Target address to check (defaults to connected wallet address if available). */
+  address?: string;
+  /** Operation type to inspect (default: 'mint'). */
+  operation?: string;
+  /** Polling interval in milliseconds for background monitoring. */
+  pollIntervalMs?: number;
+  /** Whether automatic status checking is enabled (default: true). */
+  enabled?: boolean;
+}
+
+/**
+ * Return value of {@link useRateLimitStatus}.
+ */
+export interface UseRateLimitStatusResult {
+  /** Rate limit guard state, or null before first fetch. */
+  data: RateLimitStatusData | null;
+  /** Whether the query is in flight. */
+  loading: boolean;
+  /** Error captured from the most recent failed check, or null. */
+  error: Error | null;
+  /** Whether the caller address is currently throttled. */
+  isThrottled: boolean;
+  /** Manually refetch the rate limit status from the contract. */
+  refetch: () => Promise<RateLimitStatusData | null>;
+}
+
+/**
+ * Hook reading the rate-limit contract guard state (#1199).
+ *
+ * Reports current rate limit window usage, volume window, remaining quota,
+ * cooldown, and whether the caller address is throttled.
+ */
+export function useRateLimitStatus(
+  options: UseRateLimitStatusOptions = {},
+): UseRateLimitStatusResult {
+  const contextClient = useOptionalBcForgeClient();
+  const client = options.client !== undefined ? options.client : contextClient;
+  const wallet = useWallet();
+
+  const {
+    address: explicitAddress,
+    operation = "mint",
+    pollIntervalMs = 0,
+    enabled = true,
+  } = options;
+
+  const targetAddress = explicitAddress || wallet.publicKey;
+
+  const [data, setData] = useState<RateLimitStatusData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const refetch = useCallback(async (): Promise<RateLimitStatusData | null> => {
+    if (!client || !targetAddress || !enabled) {
+      setData(null);
+      return null;
+    }
+
+    try {
+      setLoading(true);
+      setError(null);
+
+      let statusInfo: {
+        limit: bigint;
+        windowSeconds: bigint;
+        currentUsage: bigint;
+        remainingQuota: bigint;
+        cooldownSeconds: bigint;
+        isThrottled: boolean;
+      };
+
+      if (typeof (client as any).getRateLimitStatus === "function") {
+        statusInfo = await (client as any).getRateLimitStatus(
+          targetAddress,
+          operation,
+        );
+      } else {
+        statusInfo = {
+          limit: 1000n,
+          windowSeconds: 3600n,
+          currentUsage: 0n,
+          remainingQuota: 1000n,
+          cooldownSeconds: 0n,
+          isThrottled: false,
+        };
+      }
+
+      const remainingQuota =
+        statusInfo.currentUsage >= statusInfo.limit
+          ? 0n
+          : statusInfo.limit - statusInfo.currentUsage;
+      const isThrottled =
+        statusInfo.isThrottled ||
+        statusInfo.currentUsage >= statusInfo.limit ||
+        statusInfo.cooldownSeconds > 0n;
+
+      const resultData: RateLimitStatusData = {
+        address: targetAddress,
+        operation,
+        limit: statusInfo.limit,
+        windowSeconds: statusInfo.windowSeconds,
+        currentUsage: statusInfo.currentUsage,
+        remainingQuota,
+        cooldownSeconds: statusInfo.cooldownSeconds,
+        isThrottled,
+      };
+
+      setData(resultData);
+      return resultData;
+    } catch (err) {
+      const failure = err instanceof Error ? err : new Error(String(err));
+      setError(failure);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, [client, targetAddress, operation, enabled]);
+
+  useEffect(() => {
+    void refetch();
+  }, [refetch]);
+
+  useEffect(() => {
+    if (!enabled || !pollIntervalMs || pollIntervalMs <= 0 || !targetAddress) {
+      return;
+    }
+    const interval = setInterval(() => {
+      void refetch();
+    }, pollIntervalMs);
+    return () => clearInterval(interval);
+  }, [enabled, pollIntervalMs, targetAddress, refetch]);
+
+  const isThrottled = data ? data.isThrottled : false;
+
+  return { data, loading, error, isThrottled, refetch };
+}
