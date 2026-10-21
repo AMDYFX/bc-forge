@@ -9,6 +9,8 @@ import React, {
   useRef,
   useState,
   ReactNode,
+  Component,
+  type ErrorInfo,
 } from "react";
 import {
   bcForgeClient,
@@ -182,9 +184,65 @@ const bcForgeContext = createContext<BcForgeContextType>({
   switchError: null,
 });
 
+// ─── Provider Error Boundary (#1147) ────────────────────────────────────────
+
+/** Props for {@link ProviderErrorBoundary}. */
+export interface ProviderErrorBoundaryProps {
+  children: ReactNode;
+  fallback?:
+    ReactNode | ((error: Error, resetErrorBoundary: () => void) => ReactNode);
+  onError?: (error: Error, errorInfo: ErrorInfo) => void;
+}
+
+/** State for {@link ProviderErrorBoundary}. */
+export interface ProviderErrorBoundaryState {
+  error: Error | null;
+}
+
+/** Error boundary wrapping {@link BcForgeProvider}'s children (#1147). */
+export class ProviderErrorBoundary extends Component<
+  ProviderErrorBoundaryProps,
+  ProviderErrorBoundaryState
+> {
+  constructor(props: ProviderErrorBoundaryProps) {
+    super(props);
+    this.state = { error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ProviderErrorBoundaryState {
+    return { error };
+  }
+
+  override componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
+    this.props.onError?.(error, errorInfo);
+  }
+
+  resetErrorBoundary = () => {
+    this.setState({ error: null });
+  };
+
+  override render(): ReactNode {
+    if (this.state.error) {
+      if (typeof this.props.fallback === "function") {
+        return this.props.fallback(this.state.error, this.resetErrorBoundary);
+      }
+      if (this.props.fallback) {
+        return this.props.fallback;
+      }
+      return null;
+    }
+    return this.props.children;
+  }
+}
+
 export interface BcForgeProviderProps {
   config: bcForgeClientConfig;
   vaultConfig?: VaultClientConfig;
+  /** Fallback UI shown when a descendant throws during rendering or lifecycle (#1147). */
+  errorFallback?:
+    ReactNode | ((error: Error, resetErrorBoundary: () => void) => ReactNode);
+  /** Called when a descendant error is caught (#1147). */
+  onError?: (error: Error, info: ErrorInfo) => void;
   children: ReactNode;
   /**
    * Network to start on (#1148). Omit to stay on the `config` passphrase until
@@ -211,6 +269,8 @@ export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({
   rpcUrls,
   contractIds,
   onNetworkChange,
+  errorFallback,
+  onError,
 }) => {
   const [selectedNetworkId, setSelectedNetworkId] = useState<NetworkId | null>(
     defaultNetwork ?? null,
@@ -338,7 +398,11 @@ export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({
   );
 
   return (
-    <bcForgeContext.Provider value={value}>{children}</bcForgeContext.Provider>
+    <bcForgeContext.Provider value={value}>
+      <ProviderErrorBoundary fallback={errorFallback} onError={onError}>
+        {children}
+      </ProviderErrorBoundary>
+    </bcForgeContext.Provider>
   );
 };
 
