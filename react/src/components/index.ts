@@ -5,6 +5,9 @@ export type { AlertProps, AlertVariant } from "./Alert";
 export { Badge } from "./Badge";
 export type { BadgeProps, BadgeVariant, BadgeSize } from "./Badge";
 
+export { Modal } from "./Modal";
+export type { ModalProps, ModalSize } from "./Modal";
+
 export { ConfirmationDialog } from "./ConfirmationDialog";
 export type {
   ConfirmationDialogProps,

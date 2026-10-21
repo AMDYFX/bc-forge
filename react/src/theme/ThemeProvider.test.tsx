@@ -8,7 +8,6 @@
  * `matchMedia` and a missing `window` — is exercised directly rather than
  * inferred.
  */
-import React from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import {
   DEFAULT_THEME_STORAGE_KEY,

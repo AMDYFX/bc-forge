@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
 import '@testing-library/jest-dom';
-import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import type { VaultClient } from '@bc-forge/sdk';
 

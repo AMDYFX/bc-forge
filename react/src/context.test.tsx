@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { WalletAdapter } from '@bc-forge/sdk';
 import { BcForgeProvider, WalletProvider, useWallet } from './context';
