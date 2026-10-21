@@ -6,6 +6,7 @@ import { useBcForgeClient, truncatePublicKey } from "../context";
 import { useProposalVote, useWallet } from "../hooks";
 import { Alert } from "../components/Alert";
 import { Badge } from "../components/Badge";
+import { ConfirmationDialog } from "../components/ConfirmationDialog";
 import { theme } from "../theme";
 import { GrantRoleModal } from "./GrantRoleModal";
 import type { GrantableRole } from "./GrantRoleModal";
@@ -136,6 +137,10 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
   const [proposals, setProposals] = useState<ProposalSummary[]>([]);
   const [proposalRole, setProposalRole] = useState<Role>(Role.Minter);
 
+  const [canManagePause, setCanManagePause] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [confirmPause, setConfirmPause] = useState(false);
+
   const trimmedTarget = target.trim();
   const targetValid = isValidStellarAddress(trimmedTarget);
   const targetInvalid = trimmedTarget.length > 0 && !targetValid;
@@ -216,6 +221,35 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
       }
     }
     void check(publicKey);
+    return () => {
+      cancelled = true;
+    };
+  }, [client, connected, publicKey, reloadKey]);
+
+  useEffect(() => {
+    if (!connected || !publicKey) {
+      setCanManagePause(false);
+      return;
+    }
+    const walletAddress = publicKey;
+    let cancelled = false;
+    async function loadPauseAccess() {
+      try {
+        const [currentState, isPauser, isAdmin] = await Promise.all([
+          client.isPaused(),
+          client.hasRole(Role.Pauser, walletAddress),
+          client.hasRole(Role.Admin, walletAddress),
+        ]);
+        if (!cancelled) {
+          setPaused(currentState);
+          setCanManagePause(isPauser || isAdmin);
+        }
+      } catch (err) {
+        if (!cancelled)
+          setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    void loadPauseAccess();
     return () => {
       cancelled = true;
     };
@@ -375,6 +409,32 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
     }
   };
 
+  const togglePause = async () => {
+    setError(null);
+    setSuccess(null);
+    setBusy(true);
+    try {
+      const result = paused ? await client.unpause() : await client.pause();
+      if (result.success) {
+        setPaused(!paused);
+        setSuccess(
+          `${paused ? "Unpause" : "Pause"} succeeded. Tx: ${result.hash}`,
+        );
+        setConfirmPause(false);
+        setReloadKey((key) => key + 1);
+        window.dispatchEvent(new Event("bcforge-paused-state-change"));
+      } else {
+        setError(
+          `${paused ? "Unpause" : "Pause"} failed with transaction hash: ${result.hash}`,
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const callerIsAdmin = connected && !!publicKey && adminAccount === publicKey;
   const canAct = connected && callerIsAdmin && targetValid;
   const heldCount =
@@ -439,22 +499,22 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
             htmlFor="export-format-select"
             style={{ fontSize: "13px", color: theme.neutralText }}
           >
-            Export format
+            Format
           </label>
           <select
             id="export-format-select"
             aria-label="Export format"
             value={reportFormat}
-            onChange={(event) =>
-              setReportFormat(event.target.value as RbacReportFormat)
+            onChange={(e) =>
+              setReportFormat(e.target.value as RbacReportFormat)
             }
             style={{
-              padding: "6px 10px",
-              borderRadius: "6px",
+              padding: "4px 8px",
               border: `1px solid ${theme.border}`,
+              borderRadius: "4px",
+              fontSize: "13px",
               backgroundColor: theme.surface,
               color: theme.text,
-              fontSize: "13px",
             }}
           >
             <option value="csv">CSV</option>
@@ -462,6 +522,7 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
           </select>
           <button
             type="button"
+            data-testid="export-rbac-button"
             disabled={!targetValid || !roleState}
             style={buttonStyle(!targetValid || !roleState)}
             onClick={() => void handleExport()}
@@ -485,15 +546,6 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
         >
           {success}
         </Alert>
-      )}
-
-      {connected && !callerIsAdmin && (
-        <div data-testid="not-admin">
-          <Alert variant="warning" title="Read only">
-            Your connected wallet is not an administrator. Grant and revoke
-            actions are disabled.
-          </Alert>
-        </div>
       )}
 
       <label
@@ -720,6 +772,42 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
           emptyMessage="No pending proposals."
         />
       </section>
+
+      {canManagePause ? (
+        <section
+          aria-label="Emergency pause controls"
+          style={{ display: "flex", alignItems: "center", gap: 12 }}
+        >
+          <span data-testid="contract-pause-status">
+            Contract is {paused ? "paused" : "active"}.
+          </span>
+          <button
+            type="button"
+            data-testid="toggle-contract-pause"
+            disabled={busy}
+            style={actionButtonStyle(busy)}
+            onClick={() => setConfirmPause(true)}
+          >
+            {paused ? "Unpause Contract" : "Pause Contract"}
+          </button>
+        </section>
+      ) : null}
+
+      <ConfirmationDialog
+        open={confirmPause}
+        onClose={() => setConfirmPause(false)}
+        onConfirm={() => void togglePause()}
+        title={paused ? "Unpause contract?" : "Pause contract?"}
+        description={
+          paused
+            ? "Resuming the contract will enable token writes again."
+            : "Pausing the contract will disable token writes for users."
+        }
+        confirmLabel={paused ? "Unpause" : "Pause"}
+        busy={busy}
+        busyLabel={paused ? "Unpausing…" : "Pausing…"}
+        variant="danger"
+      />
 
       {!connected && (
         <span style={{ fontSize: "13px", color: theme.neutralText }}>

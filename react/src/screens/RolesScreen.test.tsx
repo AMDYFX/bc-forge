@@ -32,6 +32,9 @@ const mockGetRoleProposal = jest.fn();
 const mockCreateRoleProposal = jest.fn();
 const mockExecuteRoleProposal = jest.fn();
 const mockApproveProposal = jest.fn();
+const mockIsPaused = jest.fn();
+const mockPause = jest.fn();
+const mockUnpause = jest.fn();
 
 jest.mock("@bc-forge/sdk", () => ({
   Role: {
@@ -65,6 +68,9 @@ jest.mock("@bc-forge/sdk", () => ({
       executeRoleProposal: (...args: unknown[]) =>
         mockExecuteRoleProposal(...args),
       approveProposal: (...args: unknown[]) => mockApproveProposal(...args),
+      isPaused: (...args: unknown[]) => mockIsPaused(...args),
+      pause: (...args: unknown[]) => mockPause(...args),
+      unpause: (...args: unknown[]) => mockUnpause(...args),
       setWalletAdapter: jest.fn(),
       getContractId: () => config?.contractId ?? "",
     };
@@ -184,6 +190,9 @@ describe("RolesScreen (#906, #1224, #1225, #1227, #1228, #1231, #1232, #1233)", 
       success: true,
       hash: "APPROVEHASH1",
     });
+    mockIsPaused.mockResolvedValue(false);
+    mockPause.mockResolvedValue({ success: true, hash: "PAUSEHASH1" });
+    mockUnpause.mockResolvedValue({ success: true, hash: "UNPAUSEHASH1" });
   });
 
   const typeTarget = (value: string) =>
@@ -266,7 +275,11 @@ describe("RolesScreen (#906, #1224, #1225, #1227, #1228, #1231, #1232, #1233)", 
     mockHasRole.mockResolvedValue(false);
     renderWithWallet(true);
     typeTarget(TARGET);
-    expect(await screen.findByTestId("not-admin")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
+        "GBRP…YOXT",
+      );
+    });
     expect(screen.getByTestId("open-grant")).toBeDisabled();
   });
 
@@ -332,7 +345,6 @@ describe("RolesScreen (#906, #1224, #1225, #1227, #1228, #1231, #1232, #1233)", 
 
   it("explains each role permission in a badge tooltip and distinguishes granted from not granted", async () => {
     renderWithWallet(false);
-
     typeTarget(TARGET);
 
     await waitFor(() => {
@@ -556,6 +568,28 @@ describe("RolesScreen (#906, #1224, #1225, #1227, #1228, #1231, #1232, #1233)", 
     expect(screen.getByTestId("proposal-51")).toBeInTheDocument();
     expect(mockListLegacyProposals).toHaveBeenCalledTimes(2);
     expect(mockListLegacyProposals).toHaveBeenLastCalledWith(50n);
+  });
+
+  it("requires confirmation before a Pauser can pause the contract", async () => {
+    const walletAddress =
+      "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT";
+    mockHasRole.mockImplementation(
+      async (role: Role, address: string) =>
+        role === Role.Pauser && address === walletAddress,
+    );
+    mockIsPaused.mockResolvedValue(false);
+    renderWithWallet(true);
+
+    const pauseButton = await screen.findByTestId("toggle-contract-pause");
+    expect(screen.getByTestId("contract-pause-status")).toHaveTextContent(
+      "active",
+    );
+    fireEvent.click(pauseButton);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /^Pause$/ }));
+
+    await waitFor(() => expect(mockPause).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("status")).toHaveTextContent("PAUSEHASH1");
   });
 });
 

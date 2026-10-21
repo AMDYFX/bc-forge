@@ -22,6 +22,7 @@ import {
 } from "@bc-forge/sdk";
 import type { WalletAdapter } from "@bc-forge/sdk";
 import { truncateMiddle } from "./utils";
+import { PausedBanner } from "./components/PausedBanner";
 import {
   WALLET_LABELS,
   WALLET_NAMES,
@@ -400,6 +401,7 @@ export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({
   return (
     <bcForgeContext.Provider value={value}>
       <ProviderErrorBoundary fallback={errorFallback} onError={onError}>
+        <PausedBanner client={client} />
         {children}
       </ProviderErrorBoundary>
     </bcForgeContext.Provider>

@@ -1,7 +1,13 @@
-// SPDX-License-Identifier: MIT
 import "@testing-library/jest-dom";
 import React from "react";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+  act,
+} from "@testing-library/react";
 import type { VaultClient } from "@bc-forge/sdk";
 
 import { BcForgeProvider } from "../context";
@@ -10,6 +16,7 @@ import { ProposalVotingPanel } from "./ProposalVotingPanel";
 import { TokenCard } from "./TokenCard";
 import { TransactionToast } from "./TransactionToast";
 import { VaultDepositWidget } from "./VaultDepositWidget";
+import { PausedBanner } from "./PausedBanner";
 
 const mockCalculateApy = jest.fn();
 const mockBcForgeClient = jest.fn();
@@ -371,20 +378,27 @@ describe("Product components (#950)", () => {
 
     it("routes execution through onExecute when quorum is reached", async () => {
       const onExecute = jest.fn(async () => {});
+      const onExecuted = jest.fn(async () => {});
       render(
         <ProposalVotingPanel
           proposals={[{ id: 7, approvals: 3, quorum: 3 }]}
           onVote={jest.fn()}
           onExecute={onExecute}
+          onExecuted={onExecuted}
         />,
       );
 
       fireEvent.click(screen.getByRole("button", { name: "Execute" }));
       await waitFor(() => expect(onExecute).toHaveBeenCalledWith(7n));
+      await waitFor(() => expect(onExecuted).toHaveBeenCalledWith(7n));
     });
 
     it("keeps every control disabled with no provider and no handlers", () => {
-      render(<ProposalVotingPanel proposals={proposals} />);
+      render(
+        <ProposalVotingPanel
+          proposals={[...proposals, { id: 3, approvals: 3, quorum: 3 }]}
+        />,
+      );
 
       expect(screen.getByRole("alert")).toHaveTextContent("SDK unavailable");
       screen
@@ -393,6 +407,23 @@ describe("Product components (#950)", () => {
       screen
         .getAllByRole("button", { name: "Execute" })
         .forEach((b: HTMLElement) => expect(b).toBeDisabled());
+    });
+
+    it("shows the paused warning and refreshes when state changes", async () => {
+      let paused = true;
+      const client = { isPaused: jest.fn(async () => paused) };
+      render(<PausedBanner client={client as never} pollIntervalMs={0} />);
+
+      expect(await screen.findByTestId("paused-banner")).toHaveTextContent(
+        "Contract is currently paused for maintenance; writes are disabled.",
+      );
+      paused = false;
+      act(() => {
+        window.dispatchEvent(new Event("bcforge-paused-state-change"));
+      });
+      await waitFor(() =>
+        expect(screen.queryByTestId("paused-banner")).not.toBeInTheDocument(),
+      );
     });
 
     it("shows the empty message with no proposals", () => {

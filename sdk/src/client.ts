@@ -718,6 +718,12 @@ export class bcForgeClient {
     return this.invokeContract('transfer_ownership', [addressToScVal(newAdmin)], source);
   }
 
+  /** Read whether token operations are currently paused. */
+  async isPaused(): Promise<boolean> {
+    const result = await this.queryContract('is_paused', []);
+    return scValToNative(result) as boolean;
+  }
+
   /**
    * Pause all token operations. Admin or Pauser-only.
    *
