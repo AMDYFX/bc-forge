@@ -3,7 +3,7 @@ import React, { useState, useEffect } from "react";
 import { Role } from "@bc-forge/sdk";
 import type { bcForgeClient, TransactionResult } from "@bc-forge/sdk";
 import { useBcForgeClient, truncatePublicKey } from "../context";
-import { useWallet } from "../hooks";
+import { useProposalVote, useWallet } from "../hooks";
 import { Alert } from "../components/Alert";
 import { Badge } from "../components/Badge";
 import { theme } from "../theme";
@@ -11,6 +11,8 @@ import { GrantRoleModal } from "./GrantRoleModal";
 import type { GrantableRole } from "./GrantRoleModal";
 import { RevokeRoleModal } from "./RevokeRoleModal";
 import type { RevocableRole } from "./RevokeRoleModal";
+import { ProposalVotingPanel } from "../components/ProposalVotingPanel";
+import type { ProposalSummary } from "../components/ProposalVotingPanel";
 import { exportRbacReport } from "../utils";
 import type { RbacReportFormat } from "../utils";
 
@@ -95,20 +97,18 @@ const buttonStyle = (
   cursor: disabled ? "not-allowed" : "pointer",
 });
 
+const actionButtonStyle = (disabled: boolean): React.CSSProperties => ({
+  padding: "8px 14px",
+  backgroundColor: disabled ? "#9ca3af" : "#2563eb",
+  color: "#ffffff",
+  border: "none",
+  borderRadius: "6px",
+  fontWeight: 500,
+  cursor: disabled ? "not-allowed" : "pointer",
+});
+
 /**
- * Role management dashboard (#906, #1224, #1225, #1227, #1228).
- *
- * - Role cards: description, permission summary and, for the inspected
- *   address, whether the role is held plus a held-roles count.
- * - Inspection search: a valid `G...` address triggers a debounced
- *   `hasRole` lookup for every role; an invalid one shows a validation error
- *   and clears the matrix.
- * - Grant/revoke go through {@link GrantRoleModal} and {@link RevokeRoleModal}
- *   and are enabled only for a connected wallet that holds Admin or SuperAdmin.
- *
- * State: `target` (input), `debouncedTarget` (address being looked up),
- * `roleState` (lookup result or null), `adminAccount` (account verified as admin of the
- * connected wallet), `grantOpen` / `revokeRole` (open modals).
+ * Role management dashboard (#906, #1224, #1225, #1227, #1228, #1231, #1232, #1233).
  */
 export const RolesScreen: React.FC<RolesScreenProps> = ({
   style,
@@ -117,6 +117,7 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
 }) => {
   const client = useBcForgeClient();
   const { publicKey, connected } = useWallet();
+  const { vote } = useProposalVote();
 
   const [target, setTarget] = useState("");
   const [debouncedTarget, setDebouncedTarget] = useState("");
@@ -130,6 +131,14 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
   const [revokeRole, setRevokeRole] = useState<RevocableRole | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [reportFormat, setReportFormat] = useState<RbacReportFormat>("csv");
+  const [busy, setBusy] = useState(false);
+
+  const [proposals, setProposals] = useState<ProposalSummary[]>([]);
+  const [proposalRole, setProposalRole] = useState<Role>(Role.Minter);
+
+  const trimmedTarget = target.trim();
+  const targetValid = isValidStellarAddress(trimmedTarget);
+  const targetInvalid = trimmedTarget.length > 0 && !targetValid;
 
   const handleExport = async () => {
     if (!roleState || !targetValid) return;
@@ -163,10 +172,6 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
     }
   };
 
-  const trimmedTarget = target.trim();
-  const targetValid = isValidStellarAddress(trimmedTarget);
-  const targetInvalid = trimmedTarget.length > 0 && !targetValid;
-
   useEffect(() => {
     if (!targetValid) return;
     const id = setTimeout(() => setDebouncedTarget(trimmedTarget), debounceMs);
@@ -194,15 +199,18 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
   }, [client, debouncedTarget, trimmedTarget, reloadKey]);
 
   useEffect(() => {
-    if (!connected || !publicKey) return;
     let cancelled = false;
-    async function check(caller: string) {
+    async function check(key: string | null) {
+      if (!key) {
+        setAdminAccount(null);
+        return;
+      }
       try {
-        const [admin, superAdmin] = await Promise.all([
-          client.hasRole(Role.Admin, caller),
-          client.hasRole(Role.SuperAdmin, caller),
+        const [isAdmin, isSuperAdmin] = await Promise.all([
+          client.hasRole(Role.Admin, key),
+          client.hasRole(Role.SuperAdmin, key),
         ]);
-        if (!cancelled) setAdminAccount(admin || superAdmin ? caller : null);
+        if (!cancelled) setAdminAccount(isAdmin || isSuperAdmin ? key : null);
       } catch {
         if (!cancelled) setAdminAccount(null);
       }
@@ -213,6 +221,52 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
     };
   }, [client, connected, publicKey, reloadKey]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadProposals() {
+      try {
+        const pendingIds: bigint[] = [];
+        const approvedIds: bigint[] = [];
+        let cursor: bigint | number = 0;
+        let nextCursor: bigint | null;
+        do {
+          const lists = await client.listLegacyProposals(cursor);
+          pendingIds.push(...lists.pendingIds);
+          approvedIds.push(...lists.approvedIds);
+          nextCursor = lists.nextCursor;
+          if (nextCursor !== null) cursor = nextCursor;
+        } while (nextCursor !== null);
+        if (!cancelled) {
+          const details = await Promise.all(
+            [...pendingIds, ...approvedIds].map(async (id) => {
+              const detail = await client.getRoleProposal(id);
+              return detail
+                ? {
+                    id,
+                    action: `Grant ${detail.role}`,
+                    description: detail.description,
+                    approvals: detail.approvals,
+                    quorum: detail.quorum,
+                    executed: detail.executed,
+                  }
+                : null;
+            }),
+          );
+          setProposals(
+            details.flatMap((proposal) => (proposal ? [proposal] : [])),
+          );
+        }
+      } catch (err) {
+        if (!cancelled)
+          setError(err instanceof Error ? err.message : String(err));
+      }
+    }
+    void loadProposals();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, reloadKey]);
+
   const onDone = (label: string, result: TransactionResult) => {
     setSuccess(`${label} succeeded. Tx: ${result.hash}`);
     setReloadKey((key) => key + 1);
@@ -222,10 +276,104 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
     role === Role.Minter
       ? client.grantMinter(address)
       : client.grantSuperAdmin(address);
+
   const revoke = (role: RevocableRole, address: string) =>
     role === Role.Minter
       ? client.revokeMinter(address)
       : client.revokeSuperAdmin(address);
+
+  const handleRevokeClick = async (role: Role) => {
+    setError(null);
+    setSuccess(null);
+    if (role === Role.SuperAdmin) {
+      let addresses: string[];
+      try {
+        const [pool, admin] = await Promise.all([
+          client.getAdminPool(),
+          client.getAdmin().catch(() => null),
+        ]);
+        addresses = Array.from(
+          new Set([...pool, ...(admin ? [admin] : []), trimmedTarget]),
+        );
+      } catch {
+        setError(
+          "Unable to verify the active Super Admin count. Try again when the network is available.",
+        );
+        return;
+      }
+      try {
+        const roles = await Promise.all(
+          addresses.map((address) => client.hasRole(Role.SuperAdmin, address)),
+        );
+        const targetIsSuperAdmin = await client.hasRole(
+          Role.SuperAdmin,
+          trimmedTarget,
+        );
+        if (targetIsSuperAdmin && roles.filter(Boolean).length <= 1) {
+          setError("Cannot revoke last active Super Admin");
+          return;
+        }
+      } catch {
+        setError(
+          "Unable to verify the active Super Admin count. Try again when the network is available.",
+        );
+        return;
+      }
+      setBusy(true);
+      try {
+        const result = await client.revokeSuperAdmin(trimmedTarget);
+        if (result.success) {
+          setSuccess(`Revoke Super Admin succeeded. Tx: ${result.hash}`);
+          setReloadKey((key) => key + 1);
+        } else {
+          setError(
+            `Revoke Super Admin failed with transaction hash: ${result.hash}`,
+          );
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    setRevokeRole(role as RevocableRole);
+  };
+
+  const createRoleProposal = async () => {
+    if (!publicKey || !targetValid) return;
+    setError(null);
+    setSuccess(null);
+    if (roleState?.[proposalRole]) {
+      setError(`Target already holds ${proposalRole}.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = await client.createRoleProposal(
+        publicKey,
+        proposalRole,
+        trimmedTarget,
+        `Grant ${proposalRole} to ${trimmedTarget}`,
+      );
+      if (result.success) {
+        const proposalId =
+          result.returnValue === undefined
+            ? ""
+            : ` #${String(result.returnValue)}`;
+        setSuccess(`Proposal${proposalId} created. Tx: ${result.hash}`);
+        setReloadKey((key) => key + 1);
+      } else {
+        setError(
+          `Proposal creation failed with transaction hash: ${result.hash}`,
+        );
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const callerIsAdmin = connected && !!publicKey && adminAccount === publicKey;
   const canAct = connected && callerIsAdmin && targetValid;
@@ -246,6 +394,7 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
         maxWidth: "800px",
         margin: "0 auto",
         fontFamily: "inherit",
+        color: theme.text,
         ...style,
       }}
     >
@@ -258,16 +407,68 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
         </p>
       </div>
 
-      <div style={{ fontSize: "14px", color: theme.neutralText }}>
-        Signing account:{" "}
-        <span
-          data-testid="roles-connected-account"
-          style={{ fontFamily: "monospace" }}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: "12px",
+        }}
+      >
+        <div style={{ fontSize: "14px", color: theme.neutralText }}>
+          Signing account:{" "}
+          <span
+            data-testid="roles-connected-account"
+            style={{ fontFamily: "monospace" }}
+          >
+            {connected && publicKey
+              ? truncatePublicKey(publicKey)
+              : "Not connected"}
+          </span>
+        </div>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
         >
-          {connected && publicKey
-            ? truncatePublicKey(publicKey)
-            : "Not connected"}
-        </span>
+          <label
+            htmlFor="export-format-select"
+            style={{ fontSize: "13px", color: theme.neutralText }}
+          >
+            Export format
+          </label>
+          <select
+            id="export-format-select"
+            aria-label="Export format"
+            value={reportFormat}
+            onChange={(event) =>
+              setReportFormat(event.target.value as RbacReportFormat)
+            }
+            style={{
+              padding: "6px 10px",
+              borderRadius: "6px",
+              border: `1px solid ${theme.border}`,
+              backgroundColor: theme.surface,
+              color: theme.text,
+              fontSize: "13px",
+            }}
+          >
+            <option value="csv">CSV</option>
+            <option value="json">JSON</option>
+          </select>
+          <button
+            type="button"
+            disabled={!targetValid || !roleState}
+            style={buttonStyle(!targetValid || !roleState)}
+            onClick={() => void handleExport()}
+          >
+            Export permissions
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -286,6 +487,15 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
         </Alert>
       )}
 
+      {connected && !callerIsAdmin && (
+        <div data-testid="not-admin">
+          <Alert variant="warning" title="Read only">
+            Your connected wallet is not an administrator. Grant and revoke
+            actions are disabled.
+          </Alert>
+        </div>
+      )}
+
       <label
         style={{
           display: "flex",
@@ -301,11 +511,13 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
           name="target"
           placeholder="Target G... address"
           value={target}
-          aria-invalid={targetInvalid}
           onChange={(e) => {
-            setTarget(e.target.value);
-            setError(null);
-            setRoleState(null);
+            const next = e.target.value;
+            setTarget(next);
+            if (!next.trim()) {
+              setDebouncedTarget("");
+              setRoleState(null);
+            }
           }}
           style={{
             padding: "8px 12px",
@@ -313,14 +525,16 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
             borderRadius: "6px",
             fontSize: "14px",
             outline: "none",
+            backgroundColor: theme.surface,
+            color: theme.text,
           }}
         />
         {targetInvalid && (
           <span
             data-testid="target-error"
-            style={{ color: theme.dangerText, fontSize: "13px" }}
+            style={{ fontSize: "12px", color: theme.danger }}
           >
-            Enter a valid Stellar address starting with G (56 characters).
+            Enter a valid 56-character Stellar public key (starts with G).
           </span>
         )}
       </label>
@@ -400,14 +614,18 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
         <button
           type="button"
           data-testid="open-grant"
-          disabled={!canAct}
-          style={buttonStyle(!canAct)}
+          disabled={!canAct || busy}
+          style={buttonStyle(!canAct || busy)}
           onClick={() => setGrantOpen(true)}
         >
           Grant role
         </button>
         {([Role.Minter, Role.SuperAdmin] as const).map((role) => {
-          const disabled = !canAct || !roleState?.[role];
+          const disabled =
+            !connected ||
+            !targetValid ||
+            busy ||
+            (roleState !== null && !roleState[role]);
           return (
             <button
               key={role}
@@ -415,7 +633,7 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
               data-testid={`revoke-${role === Role.Minter ? "minter" : "super-admin"}`}
               disabled={disabled}
               style={buttonStyle(disabled, true)}
-              onClick={() => setRevokeRole(role)}
+              onClick={() => void handleRevokeClick(role)}
             >
               Revoke {role === Role.Minter ? "Minter" : "Super Admin"}
             </button>
@@ -423,65 +641,107 @@ export const RolesScreen: React.FC<RolesScreenProps> = ({
         })}
       </div>
 
+      <section
+        aria-labelledby="role-proposal-heading"
+        style={{ display: "flex", flexDirection: "column", gap: 12 }}
+      >
+        <h2 id="role-proposal-heading" style={{ margin: 0, fontSize: 18 }}>
+          Role grant proposals
+        </h2>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontSize: 14,
+            }}
+          >
+            Role
+            <select
+              aria-label="Proposal role"
+              value={proposalRole}
+              onChange={(event) => setProposalRole(event.target.value as Role)}
+              style={{
+                padding: "6px 8px",
+                border: "1px solid #d1d5db",
+                borderRadius: 4,
+                backgroundColor: theme.surface,
+                color: theme.text,
+              }}
+            >
+              <option value={Role.Minter}>Minter</option>
+              <option value={Role.SuperAdmin}>Super Admin</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            data-testid="create-role-proposal"
+            disabled={!connected || !targetValid || busy}
+            style={actionButtonStyle(!connected || !targetValid || busy)}
+            onClick={() => void createRoleProposal()}
+          >
+            {busy ? "Working…" : "Create Proposal"}
+          </button>
+        </div>
+        <ProposalVotingPanel
+          proposals={proposals}
+          admin={publicKey ?? undefined}
+          onVote={
+            publicKey
+              ? async (id) => {
+                  const result = await vote(publicKey, id);
+                  if (!result.success)
+                    throw new Error(`Approval failed: ${result.hash}`);
+                  setReloadKey((key) => key + 1);
+                }
+              : undefined
+          }
+          onExecute={
+            publicKey
+              ? async (id) => {
+                  const result = await client.executeRoleProposal(
+                    publicKey,
+                    id,
+                  );
+                  if (!result.success)
+                    throw new Error(`Execution failed: ${result.hash}`);
+                  setReloadKey((key) => key + 1);
+                }
+              : undefined
+          }
+          emptyMessage="No pending proposals."
+        />
+      </section>
+
       {!connected && (
         <span style={{ fontSize: "13px", color: theme.neutralText }}>
           Connect a wallet to grant or revoke roles.
         </span>
       )}
-      {connected && !callerIsAdmin && (
-        <span
-          data-testid="not-admin"
-          style={{ fontSize: "13px", color: theme.neutralText }}
-        >
-          The connected account is not an Admin or SuperAdmin, so role changes
-          are disabled.
-        </span>
-      )}
-
-      <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            fontSize: "14px",
-          }}
-        >
-          Export format
-          <select
-            aria-label="Export format"
-            value={reportFormat}
-            onChange={(event) =>
-              setReportFormat(event.target.value as RbacReportFormat)
-            }
-          >
-            <option value="csv">CSV</option>
-            <option value="json">JSON</option>
-          </select>
-        </label>
-        <button
-          type="button"
-          disabled={!roleState || !targetValid}
-          onClick={() => void handleExport()}
-        >
-          Export permissions
-        </button>
-      </div>
 
       <GrantRoleModal
         open={grantOpen}
         target={trimmedTarget}
         onClose={() => setGrantOpen(false)}
-        onGrant={grant}
+        onGrant={(role, address) => grant(role, address)}
         onGranted={(role, result) => onDone(`Grant ${role}`, result)}
       />
+
       {revokeRole && (
         <RevokeRoleModal
-          open
+          open={Boolean(revokeRole)}
           role={revokeRole}
           target={trimmedTarget}
           onClose={() => setRevokeRole(null)}
-          onRevoke={revoke}
+          onRevoke={(role, address) => revoke(role, address)}
           onRevoked={(role, result) => onDone(`Revoke ${role}`, result)}
         />
       )}

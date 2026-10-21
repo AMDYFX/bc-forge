@@ -16,6 +16,8 @@ import { exportRbacReport } from "../utils";
 
 const TARGET = "GAVTHAJHFEHX4PZ7GR6O5V2DSJ6G6J4U5XQZ4XK7X5XQZ4XK7X5XQZ4A";
 const CALLER = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT";
+const SECOND_SUPER_ADMIN =
+  "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
 const mockHasRole = jest.fn();
 const mockGrantMinter = jest.fn();
@@ -23,6 +25,13 @@ const mockRevokeMinter = jest.fn();
 const mockGrantSuperAdmin = jest.fn();
 const mockRevokeSuperAdmin = jest.fn();
 const mockGetEvents = jest.fn().mockResolvedValue([]);
+const mockGetAdminPool = jest.fn();
+const mockGetAdmin = jest.fn();
+const mockListLegacyProposals = jest.fn();
+const mockGetRoleProposal = jest.fn();
+const mockCreateRoleProposal = jest.fn();
+const mockExecuteRoleProposal = jest.fn();
+const mockApproveProposal = jest.fn();
 
 jest.mock("@bc-forge/sdk", () => ({
   Role: {
@@ -46,6 +55,16 @@ jest.mock("@bc-forge/sdk", () => ({
       grantSuperAdmin: (...args: unknown[]) => mockGrantSuperAdmin(...args),
       revokeSuperAdmin: (...args: unknown[]) => mockRevokeSuperAdmin(...args),
       getEvents: (...args: unknown[]) => mockGetEvents(...args),
+      getAdminPool: (...args: unknown[]) => mockGetAdminPool(...args),
+      getAdmin: (...args: unknown[]) => mockGetAdmin(...args),
+      listLegacyProposals: (...args: unknown[]) =>
+        mockListLegacyProposals(...args),
+      getRoleProposal: (...args: unknown[]) => mockGetRoleProposal(...args),
+      createRoleProposal: (...args: unknown[]) =>
+        mockCreateRoleProposal(...args),
+      executeRoleProposal: (...args: unknown[]) =>
+        mockExecuteRoleProposal(...args),
+      approveProposal: (...args: unknown[]) => mockApproveProposal(...args),
       setWalletAdapter: jest.fn(),
       getContractId: () => config?.contractId ?? "",
     };
@@ -72,7 +91,8 @@ jest.mock("@bc-forge/sdk", () => ({
     connected = false;
     publicKey?: string;
     async connect() {
-      this.publicKey = "GAVTHAJHFEHX4PZ7GR6O5V2DSJ6G6J4U5XQZ";
+      this.publicKey =
+        "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT";
       this.connected = true;
     }
     async disconnect() {
@@ -85,53 +105,84 @@ jest.mock("@bc-forge/sdk", () => ({
   },
 }));
 
+jest.mock("../hooks", () => {
+  const actual = jest.requireActual("../hooks");
+  return {
+    ...actual,
+    useProposalVote: () => ({
+      vote: (admin: string, id: bigint) => mockApproveProposal(admin, id),
+    }),
+  };
+});
+
 const config = {
   rpcUrl: "https://soroban-testnet.stellar.org",
   networkPassphrase: "Test SDF Network ; September 2015",
-  contractId: "CA123",
+  contractId: "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
 };
 
-/** Establishes a wallet connection on mount when `connected` is true. */
-const ConnectOnMount: React.FC<{ connected: boolean }> = ({ connected }) => {
-  const { connect } = useWallet();
+const AutoConnect: React.FC<{ connectOnMount: boolean }> = ({
+  connectOnMount,
+}) => {
+  const { connect, status } = useWallet();
   React.useEffect(() => {
-    if (connected) {
+    if (connectOnMount && status === "disconnected") {
       void connect("freighter");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [connectOnMount, connect, status]);
   return null;
 };
 
-const renderWithWallet = (connected: boolean) =>
+const renderWithWallet = (connectOnMount: boolean) =>
   render(
     <BcForgeProvider config={config}>
-      <WalletProvider>
+      <WalletProvider autoRestore={false}>
+        <AutoConnect connectOnMount={connectOnMount} />
         <RolesScreen debounceMs={0} />
-        <ConnectOnMount connected={connected} />
       </WalletProvider>
     </BcForgeProvider>,
   );
 
-describe("RolesScreen", () => {
+describe("RolesScreen (#906, #1224, #1225, #1227, #1228, #1231, #1232, #1233)", () => {
   beforeEach(() => {
-    [
-      mockHasRole,
-      mockGrantMinter,
-      mockRevokeMinter,
-      mockGrantSuperAdmin,
-      mockRevokeSuperAdmin,
-    ].forEach((m) => m.mockReset());
-    // Caller is SuperAdmin; target holds Minter only.
-    mockHasRole.mockImplementation(async (role: Role, addr: string) =>
-      addr === CALLER ? role === Role.SuperAdmin : role === Role.Minter,
-    );
+    jest.clearAllMocks();
+    mockHasRole.mockImplementation(async (role: Role, address: string) => {
+      if (address === TARGET) return role === Role.Minter;
+      if (address === CALLER)
+        return role === Role.Admin || role === Role.SuperAdmin;
+      return false;
+    });
     mockGrantMinter.mockResolvedValue({ success: true, hash: "GRANTHASH1" });
     mockRevokeMinter.mockResolvedValue({ success: true, hash: "REVOKEHASH1" });
-    mockGrantSuperAdmin.mockResolvedValue({ success: true, hash: "SAGRANT1" });
+    mockGrantSuperAdmin.mockResolvedValue({
+      success: true,
+      hash: "SAGRANTHASH1",
+    });
     mockRevokeSuperAdmin.mockResolvedValue({
       success: true,
       hash: "SAREVOKE1",
+    });
+    mockGetEvents.mockResolvedValue([]);
+    mockGetAdminPool.mockResolvedValue([]);
+    mockGetAdmin.mockResolvedValue(null);
+    mockListLegacyProposals.mockResolvedValue({
+      pendingIds: [],
+      approvedIds: [],
+      nextCursor: null,
+    });
+    mockGetRoleProposal.mockResolvedValue(null);
+    mockCreateRoleProposal.mockResolvedValue({
+      success: true,
+      hash: "PROPHASH1",
+      returnValue: 9n,
+    });
+    mockExecuteRoleProposal.mockResolvedValue({
+      success: true,
+      hash: "EXECPROPHASH1",
+    });
+    mockApproveProposal.mockResolvedValue({
+      success: true,
+      hash: "APPROVEHASH1",
     });
   });
 
@@ -334,6 +385,177 @@ describe("RolesScreen", () => {
 
     URL.createObjectURL = originalCreate;
     URL.revokeObjectURL = revokeObjectURL;
+  });
+
+  it("blocks revoking the last active SuperAdmin", async () => {
+    mockGetAdminPool.mockResolvedValue([TARGET]);
+    mockGetAdmin.mockResolvedValue(TARGET);
+    mockHasRole.mockImplementation(
+      async (role: Role, address: string) =>
+        (role === Role.SuperAdmin && address === TARGET) ||
+        (role === Role.Admin && address === CALLER) ||
+        (role === Role.SuperAdmin && address === CALLER),
+    );
+    renderWithWallet(true);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
+        "GBRP…YOXT",
+      );
+    });
+    fireEvent.change(screen.getByPlaceholderText(/target/i), {
+      target: { value: TARGET },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("revoke-super-admin")).toBeEnabled();
+    });
+    fireEvent.click(screen.getByTestId("revoke-super-admin"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Cannot revoke last active Super Admin",
+    );
+    expect(mockRevokeSuperAdmin).not.toHaveBeenCalled();
+  });
+
+  it("allows revoking a SuperAdmin when another configured holder remains", async () => {
+    mockGetAdminPool.mockResolvedValue([TARGET, SECOND_SUPER_ADMIN]);
+    mockHasRole.mockImplementation(
+      async (role: Role) => role === Role.SuperAdmin,
+    );
+    renderWithWallet(true);
+    await waitFor(() => {
+      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
+        "GBRP…YOXT",
+      );
+    });
+    fireEvent.change(screen.getByPlaceholderText(/target/i), {
+      target: { value: TARGET },
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("revoke-super-admin")).toBeEnabled();
+    });
+    fireEvent.click(screen.getByTestId("revoke-super-admin"));
+
+    await waitFor(() =>
+      expect(mockRevokeSuperAdmin).toHaveBeenCalledWith(TARGET),
+    );
+  });
+
+  it("creates a proposal for the selected role and target", async () => {
+    renderWithWallet(true);
+    await waitFor(() => {
+      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
+        "GBRP…YOXT",
+      );
+    });
+    fireEvent.change(screen.getByPlaceholderText(/target/i), {
+      target: { value: TARGET },
+    });
+    fireEvent.change(screen.getByLabelText("Proposal role"), {
+      target: { value: Role.SuperAdmin },
+    });
+    fireEvent.click(screen.getByTestId("create-role-proposal"));
+
+    await waitFor(() =>
+      expect(mockCreateRoleProposal).toHaveBeenCalledWith(
+        "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT",
+        Role.SuperAdmin,
+        TARGET,
+        `Grant SuperAdmin to ${TARGET}`,
+      ),
+    );
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "Proposal #9 created",
+    );
+  });
+
+  it("loads pending proposals and routes approval through the SDK client", async () => {
+    mockListLegacyProposals.mockResolvedValue({
+      pendingIds: [4n],
+      approvedIds: [],
+      nextCursor: null,
+    });
+    mockGetRoleProposal.mockResolvedValue({
+      role: Role.Minter,
+      target: TARGET,
+      description: `Grant Minter to ${TARGET}`,
+      approvals: 1,
+      quorum: 2,
+      executed: false,
+    });
+    renderWithWallet(true);
+    await waitFor(() => {
+      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
+        "GBRP…YOXT",
+      );
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(mockApproveProposal).toHaveBeenCalledWith(
+        "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT",
+        4n,
+      ),
+    );
+    expect(screen.getByText("1 of 2 approvals")).toBeInTheDocument();
+  });
+
+  it("executes a ready role proposal and refreshes its state", async () => {
+    mockListLegacyProposals.mockResolvedValue({
+      pendingIds: [],
+      approvedIds: [4n],
+      nextCursor: null,
+    });
+    mockGetRoleProposal.mockResolvedValue({
+      role: Role.Minter,
+      target: TARGET,
+      description: `Grant Minter to ${TARGET}`,
+      approvals: 2,
+      quorum: 2,
+      executed: false,
+    });
+    renderWithWallet(true);
+    await waitFor(() => {
+      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
+        "GBRP…YOXT",
+      );
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Execute" }));
+    await waitFor(() =>
+      expect(mockExecuteRoleProposal).toHaveBeenCalledWith(
+        "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT",
+        4n,
+      ),
+    );
+  });
+
+  it("loads proposal IDs across listing pages", async () => {
+    mockListLegacyProposals
+      .mockResolvedValueOnce({
+        pendingIds: [4n],
+        approvedIds: [],
+        nextCursor: 50n,
+      })
+      .mockResolvedValueOnce({
+        pendingIds: [51n],
+        approvedIds: [],
+        nextCursor: null,
+      });
+    mockGetRoleProposal.mockImplementation(async (id: bigint) => ({
+      role: Role.Minter,
+      target: TARGET,
+      description: `Proposal ${id}`,
+      approvals: 1,
+      quorum: 2,
+      executed: false,
+    }));
+    renderWithWallet(false);
+
+    expect(await screen.findByTestId("proposal-4")).toBeInTheDocument();
+    expect(screen.getByTestId("proposal-51")).toBeInTheDocument();
+    expect(mockListLegacyProposals).toHaveBeenCalledTimes(2);
+    expect(mockListLegacyProposals).toHaveBeenLastCalledWith(50n);
   });
 });
 

@@ -15,7 +15,7 @@ use soroban_sdk::{contracttype, vec, Address, BytesN, Env, Map, String, Vec};
 
 use crate::address::require_non_zero_address;
 use crate::events;
-use crate::rbac::{get_admin, has_admin, require_admin};
+use crate::rbac::{get_admin, has_admin, require_admin, require_super_admin, Role};
 use crate::reentrancy_guard;
 use crate::{extend_instance_ttl, extend_storage_ttl_for_key, AdminError, AdminKey};
 
@@ -58,6 +58,27 @@ pub struct Proposal {
     pub expiry_ledger: Option<u32>,
     /// Whether the creator withdrew the proposal. Terminal.
     pub cancelled: bool,
+}
+
+/// Role grant bound to a legacy multisig proposal without changing the
+/// persisted `Proposal` layout.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RoleGrantAction {
+    pub role: Role,
+    pub target: Address,
+}
+
+/// Role proposal information needed by the voting interface.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct RoleGrantProposalDetails {
+    pub description: String,
+    pub role: Role,
+    pub target: Address,
+    pub approvals: u32,
+    pub quorum: u32,
+    pub executed: bool,
 }
 
 /// Lifecycle state of an [`UpgradeProposal`].
@@ -419,6 +440,59 @@ pub fn create_proposal(env: &Env, creator: Address, description: String) -> u64 
     id
 }
 
+/// Creates a multisig proposal that grants `role` to `target` when executed.
+pub fn create_role_proposal(
+    env: &Env,
+    creator: Address,
+    role: Role,
+    target: Address,
+    description: String,
+) -> u64 {
+    require_non_zero_address(env, &target);
+    if matches!(role, Role::Admin) {
+        soroban_sdk::panic_with_error!(env, AdminError::InvalidRole);
+    }
+    if crate::rbac::has_role(env, role, &target) {
+        soroban_sdk::panic_with_error!(env, AdminError::RoleAlreadyGranted);
+    }
+    let id = create_proposal(env, creator, description);
+    env.storage()
+        .instance()
+        .set(&AdminKey::RoleGrantProposal(id), &RoleGrantAction { role, target });
+    extend_instance_ttl(env);
+    id
+}
+
+/// Returns proposal details for the voting panel.
+pub fn get_proposal(env: &Env, proposal_id: u64) -> Option<Proposal> {
+    let proposal = env
+        .storage()
+        .instance()
+        .get(&AdminKey::Proposal(proposal_id));
+    if proposal.is_some() {
+        extend_instance_ttl(env);
+    }
+    proposal
+}
+
+/// Returns a role proposal with its live approval tally, or `None` for a
+/// generic proposal or unknown ID.
+pub fn get_role_proposal(env: &Env, proposal_id: u64) -> Option<RoleGrantProposalDetails> {
+    let action: RoleGrantAction = env
+        .storage()
+        .instance()
+        .get(&AdminKey::RoleGrantProposal(proposal_id))?;
+    let proposal = get_proposal(env, proposal_id)?;
+    Some(RoleGrantProposalDetails {
+        description: proposal.description,
+        role: action.role,
+        target: action.target,
+        approvals: proposal.approvals.len(),
+        quorum: get_threshold(env),
+        executed: proposal.executed,
+    })
+}
+
 /// Approves a multi-sig governance proposal.
 ///
 /// @notice Approves proposal `proposal_id` on behalf of `admin`.
@@ -488,6 +562,14 @@ pub fn mark_executed(env: &Env, proposal_id: u64) {
     let admin = get_admin(env);
     admin.require_auth();
 
+    if env
+        .storage()
+        .instance()
+        .has(&AdminKey::RoleGrantProposal(proposal_id))
+    {
+        soroban_sdk::panic_with_error!(env, AdminError::RoleProposalRequiresExecution);
+    }
+
     let mut proposal: Proposal = env
         .storage()
         .instance()
@@ -512,6 +594,51 @@ pub fn mark_executed(env: &Env, proposal_id: u64) {
         .instance()
         .set(&AdminKey::Proposal(proposal_id), &proposal);
     extend_instance_ttl(env);
+}
+
+/// Executes a quorum-approved role grant proposal.
+pub fn execute_role_proposal(
+    env: &Env,
+    executor: Address,
+    proposal_id: u64,
+) -> Result<(), AdminError> {
+    let _reentrancy_guard = reentrancy_guard::enter(env);
+    executor.require_auth();
+    if !get_admin_pool(env).contains(&executor) {
+        return Err(AdminError::UnauthorizedRole);
+    }
+    require_super_admin(env, &executor);
+
+    let mut proposal: Proposal = env
+        .storage()
+        .instance()
+        .get(&AdminKey::Proposal(proposal_id))
+        .ok_or(AdminError::ProposalNotFound)?;
+    if proposal.executed {
+        return Err(AdminError::ProposalAlreadyExecuted);
+    }
+    if proposal.cancelled {
+        return Err(AdminError::ProposalCancelled);
+    }
+    if _proposal_expired(env, &proposal) {
+        return Err(AdminError::ProposalExpired);
+    }
+    if !is_proposal_ready(env, proposal_id) {
+        return Err(AdminError::ThresholdNotMet);
+    }
+
+    let action: RoleGrantAction = env
+        .storage()
+        .instance()
+        .get(&AdminKey::RoleGrantProposal(proposal_id))
+        .ok_or(AdminError::RoleProposalNotFound)?;
+    crate::rbac::_grant_role(env, &executor, action.role, &action.target);
+    proposal.executed = true;
+    env.storage()
+        .instance()
+        .set(&AdminKey::Proposal(proposal_id), &proposal);
+    extend_instance_ttl(env);
+    Ok(())
 }
 
 fn _proposal_expired(env: &Env, proposal: &Proposal) -> bool {
@@ -547,6 +674,9 @@ pub fn cancel_legacy_proposal(
     }
 
     proposal.cancelled = true;
+    env.storage()
+        .instance()
+        .remove(&AdminKey::RoleGrantProposal(proposal_id));
     env.storage()
         .instance()
         .set(&AdminKey::Proposal(proposal_id), &proposal);

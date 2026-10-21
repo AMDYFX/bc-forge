@@ -1136,6 +1136,41 @@ impl BcForgeToken {
         admin::create_proposal(&env, creator, description)
     }
 
+    /// Checks whether an address holds a role.
+    pub fn has_role(env: Env, role: admin::Role, address: Address) -> bool {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::has_role(&env, role, &address)
+    }
+
+    /// Grants a role to an address through the shared admin module.
+    pub fn grant_role(env: Env, caller: Address, role: admin::Role, address: Address) {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::grant_role(&env, &caller, role, &address);
+    }
+
+    /// Revokes a role from an address through the shared admin module.
+    pub fn revoke_role(
+        env: Env,
+        caller: Address,
+        role: admin::Role,
+        address: Address,
+    ) -> Result<(), admin::AdminError> {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::revoke_role(&env, &caller, role, &address)
+    }
+
+    /// Creates a multisig proposal that grants a role after approval.
+    pub fn create_role_proposal(
+        env: Env,
+        creator: Address,
+        role: admin::Role,
+        target: Address,
+        description: String,
+    ) -> u64 {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::create_role_proposal(&env, creator, role, target, description)
+    }
+
     /// Approves a multi-sig governance proposal.
     ///
     /// @notice Records `admin`'s approval for `proposal_id`.
@@ -1151,10 +1186,53 @@ impl BcForgeToken {
         admin::is_proposal_ready(&env, proposal_id)
     }
 
+    /// Returns the details for a legacy multisig proposal.
+    pub fn get_proposal(env: Env, proposal_id: u64) -> Option<admin::Proposal> {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::get_proposal(&env, proposal_id)
+    }
+
+    /// Returns role action details and approval tally for a proposal.
+    pub fn get_role_proposal(
+        env: Env,
+        proposal_id: u64,
+    ) -> Option<admin::RoleGrantProposalDetails> {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::get_role_proposal(&env, proposal_id)
+    }
+
+    /// Lists pending and approved legacy multisig proposals by page.
+    pub fn list_legacy_proposals(env: Env, start_after: u64) -> admin::LegacyProposalLists {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::list_legacy_proposals(&env, start_after)
+    }
+
+    /// Executes a role grant after its multisig proposal reaches quorum.
+    pub fn execute_role_proposal(
+        env: Env,
+        executor: Address,
+        proposal_id: u64,
+    ) -> Result<(), admin::AdminError> {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::execute_role_proposal(&env, executor, proposal_id)
+    }
+
     /// Configures the multi-sig admin pool and approval threshold for upgrades.
     pub fn set_admin_pool(env: Env, pool: Vec<Address>, threshold: u32) {
         Self::ensure_initialized(&env).expect("token must be initialized");
         admin::set_admin_pool(&env, pool, threshold);
+    }
+
+    /// Returns the configured multisig admin pool.
+    pub fn get_admin_pool(env: Env) -> Vec<Address> {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::get_admin_pool(&env)
+    }
+
+    /// Returns the configured multisig approval threshold.
+    pub fn get_threshold(env: Env) -> u32 {
+        Self::ensure_initialized(&env).expect("token must be initialized");
+        admin::get_threshold(&env)
     }
 
     /// Executes a quorum-approved WASM upgrade on this token contract.

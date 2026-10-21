@@ -1458,7 +1458,7 @@ export function useVaultShareBalance(
 
 /**
  * Multi-sig proposal actions, backed by `bcForgeClient.approveProposal` and
- * `bcForgeClient.executeProposal`.
+ * `bcForgeClient.executeRoleProposal`.
  *
  * Uses the optional context client so {@link ProposalVotingPanel} can also be
  * driven entirely by its `onVote` / `onExecute` props.
@@ -1501,12 +1501,12 @@ export function useProposalVoting() {
   );
 
   const execute = useCallback(
-    async (proposalId: bigint, source?: Keypair) => {
+    async (admin: string, proposalId: bigint, source?: Keypair) => {
       if (!client) {
         throw new Error("useProposalVoting requires a BcForgeProvider client");
       }
       return run(proposalId.toString(), () =>
-        client.executeProposal(proposalId, source),
+        client.executeRoleProposal(admin, proposalId, source),
       );
     },
     [client, run],
