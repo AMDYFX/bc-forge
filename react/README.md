@@ -157,6 +157,7 @@ Hooks and client access:
 - `useTokenMetadata`, `clearTokenMetadataCache`, `useBcForgeToken`, `useBalance`, `useAccountBalance`, `useMint`, `useTotalSupply`, `useTransfer`
 - `useApprove`, `useBurn`, `useAllowance`, `useTokenAllowance`, `useHasRole`
 - `useVaultDeposit`, `useVaultShareBalance`, `useProposalVote`, `useProposalVoting`
+- `useTransactionSubmission`, `decodeTransactionError`
 
 Theme:
 
