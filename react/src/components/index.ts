@@ -5,6 +5,26 @@ export type { AlertProps, AlertVariant } from "./Alert";
 export { Badge } from "./Badge";
 export type { BadgeProps, BadgeVariant, BadgeSize } from "./Badge";
 
+export { Breadcrumbs } from "./Breadcrumbs";
+export type { BreadcrumbItem, BreadcrumbsProps } from "./Breadcrumbs";
+
+export { Button } from "./Button";
+export type { ButtonProps, ButtonVariant, ButtonSize } from "./Button";
+
+export { Footer } from "./Footer";
+export type { FooterProps } from "./Footer";
+
+export { SegmentedControl } from "./SegmentedControl";
+export type {
+  SegmentedControlProps,
+  SegmentedOption,
+} from "./SegmentedControl";
+
+export { Tabs } from "./Tabs";
+export type { TabsProps, TabItem } from "./Tabs";
+
+export { Modal } from "./Modal";
+export type { ModalProps, ModalSize } from "./Modal";
 export { ConfirmationDialog } from "./ConfirmationDialog";
 export type {
   ConfirmationDialogProps,
