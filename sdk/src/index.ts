@@ -27,6 +27,7 @@ export type {
   BatchMintRecipient,
   bcForgeClientConfig,
   RbacInitResult,
+  RoleHierarchy,
   TransactionResult,
 } from './client';
 /**
