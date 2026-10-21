@@ -132,17 +132,6 @@ export type {
   ProposalId,
 } from "./ProposalVotingPanel";
 
-export {
-  TransactionHistory,
-  useSessionTransactions,
-} from "./TransactionHistory";
-export type {
-  TransactionHistoryProps,
-  TransactionRecord,
-  TransactionOperation,
-  TransactionRecordStatus,
-} from "./TransactionHistory";
-
 export { TransactionToast } from "./TransactionToast";
 export type {
   TransactionToastProps,
@@ -151,6 +140,15 @@ export type {
 
 export { CopyToClipboard } from "./CopyToClipboard";
 export type { CopyToClipboardProps } from "./CopyToClipboard";
+
+export {
+  TransferReceiptModal,
+  buildExplorerTxUrl,
+} from "./TransferReceiptModal";
+export type {
+  TransferReceipt,
+  TransferReceiptModalProps,
+} from "./TransferReceiptModal";
 
 export {
   ConnectionStatusBar,
