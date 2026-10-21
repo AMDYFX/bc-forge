@@ -9,6 +9,8 @@ export * from './screens/TransferScreen';
 export * from './screens/BurnScreen';
 export * from './screens/MintScreen';
 export * from './screens/RolesScreen';
+export * from './screens/GrantRoleModal';
+export * from './screens/RevokeRoleModal';
 export { theme } from './theme';
 // Design tokens and the CSS-variable bridge (#1140).
 export {

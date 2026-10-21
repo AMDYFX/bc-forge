@@ -1,13 +1,20 @@
 // SPDX-License-Identifier: MIT
 import "@testing-library/jest-dom";
 import React from "react";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { Role } from "@bc-forge/sdk";
 import { BcForgeProvider, WalletProvider } from "../context";
 import { useWallet } from "../hooks";
 import { RolesScreen } from "./RolesScreen";
 
-const TARGET = "GAVTHAJHFEHX4PZ7GR6O5V2DSJ6G6J4U5XQZ4XK7X5XQZ4XK7X5XQZ";
+const TARGET = "GAVTHAJHFEHX4PZ7GR6O5V2DSJ6G6J4U5XQZ4XK7X5XQZ4XK7X5XQZ4A";
+const CALLER = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT";
 
 const mockHasRole = jest.fn();
 const mockGrantMinter = jest.fn();
@@ -97,7 +104,7 @@ const renderWithWallet = (connected: boolean) =>
   render(
     <BcForgeProvider config={config}>
       <WalletProvider>
-        <RolesScreen />
+        <RolesScreen debounceMs={0} />
         <ConnectOnMount connected={connected} />
       </WalletProvider>
     </BcForgeProvider>,
@@ -105,52 +112,17 @@ const renderWithWallet = (connected: boolean) =>
 
 describe("RolesScreen", () => {
   beforeEach(() => {
-    mockHasRole.mockReset();
-    mockGrantMinter.mockReset();
-    mockRevokeMinter.mockReset();
-    mockGrantSuperAdmin.mockReset();
-    mockRevokeSuperAdmin.mockReset();
-    (globalThis as typeof globalThis & { fetch: jest.Mock }).fetch = jest
-      .fn()
-      .mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          events: [
-            {
-              topic: [
-                "role_granted",
-                { value: TARGET },
-                {
-                  value:
-                    "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT",
-                },
-              ],
-              txHash: "EVENTHASH1",
-              ledger: 101,
-              ledgerClosedAt: "2024-01-01T00:00:00.000Z",
-            },
-            {
-              topic: [
-                "role_revoked",
-                {
-                  value:
-                    "GAVTHAJHFEHX4PZ7GR6O5V2DSJ6G6J4U5XQZ4XK7X5XQZ4XK7X5XQZ",
-                },
-                {
-                  value:
-                    "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT",
-                },
-              ],
-              txHash: "EVENTHASH2",
-              ledger: 102,
-              ledgerClosedAt: "2024-01-01T00:01:00.000Z",
-            },
-          ],
-        }),
-      });
-
-    // Minter granted; everything else not granted.
-    mockHasRole.mockImplementation(async (role: Role) => role === Role.Minter);
+    [
+      mockHasRole,
+      mockGrantMinter,
+      mockRevokeMinter,
+      mockGrantSuperAdmin,
+      mockRevokeSuperAdmin,
+    ].forEach((m) => m.mockReset());
+    // Caller is SuperAdmin; target holds Minter only.
+    mockHasRole.mockImplementation(async (role: Role, addr: string) =>
+      addr === CALLER ? role === Role.SuperAdmin : role === Role.Minter,
+    );
     mockGrantMinter.mockResolvedValue({ success: true, hash: "GRANTHASH1" });
     mockRevokeMinter.mockResolvedValue({ success: true, hash: "REVOKEHASH1" });
     mockGrantSuperAdmin.mockResolvedValue({ success: true, hash: "SAGRANT1" });
@@ -160,131 +132,143 @@ describe("RolesScreen", () => {
     });
   });
 
-  it("renders a badge per role from the mocked hasRole result", async () => {
-    renderWithWallet(false);
-
+  const typeTarget = (value: string) =>
     fireEvent.change(screen.getByPlaceholderText(/target/i), {
-      target: { value: TARGET },
+      target: { value },
     });
 
-    await waitFor(() => {
+  const connectedWithTarget = async () => {
+    renderWithWallet(true);
+    await waitFor(() =>
+      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
+        "GBRP…YOXT",
+      ),
+    );
+    typeTarget(TARGET);
+    await waitFor(() =>
       expect(screen.getByTestId("role-badge-Minter")).toHaveTextContent(
         "Minter: Granted",
-      );
-    });
+      ),
+    );
+    await waitFor(() => expect(screen.getByTestId("open-grant")).toBeEnabled());
+  };
 
+  it("renders a card per role and badges from hasRole", async () => {
+    renderWithWallet(false);
+    expect(screen.getAllByTestId(/^role-card-/)).toHaveLength(4);
+    typeTarget(TARGET);
+    await waitFor(() =>
+      expect(screen.getByTestId("role-badge-Minter")).toHaveTextContent(
+        "Minter: Granted",
+      ),
+    );
     expect(screen.getByTestId("role-badge-Admin")).toHaveTextContent(
       "Admin: Not granted",
     );
-    expect(screen.getByTestId("role-badge-SuperAdmin")).toHaveTextContent(
-      "SuperAdmin: Not granted",
+    expect(screen.getByTestId("role-count")).toHaveTextContent(
+      "Roles held: 1 of 4",
     );
-    expect(screen.getByTestId("role-badge-Pauser")).toHaveTextContent(
-      "Pauser: Not granted",
+    [Role.Admin, Role.SuperAdmin, Role.Minter, Role.Pauser].forEach((r) =>
+      expect(mockHasRole).toHaveBeenCalledWith(r, TARGET),
     );
-
-    expect(mockHasRole).toHaveBeenCalledWith(Role.Admin, TARGET);
-    expect(mockHasRole).toHaveBeenCalledWith(Role.SuperAdmin, TARGET);
-    expect(mockHasRole).toHaveBeenCalledWith(Role.Minter, TARGET);
-    expect(mockHasRole).toHaveBeenCalledWith(Role.Pauser, TARGET);
   });
 
-  it("renders recent role_granted and role_revoked events in the RBAC audit table", async () => {
-    renderWithWallet(true);
-
-    await waitFor(() => {
-      expect(screen.getByText("Role Audit Log")).toBeInTheDocument();
-    });
-
-    expect(await screen.findByText("granted")).toBeInTheDocument();
-    expect(screen.getByText("revoked")).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", { name: /EVEN.*ASH1/i }),
-    ).toBeInTheDocument();
-  });
-
-  it("grant-minter click calls grantMinter for the typed address and refreshes badges", async () => {
-    renderWithWallet(true);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
-        "GBRP…YOXT",
-      );
-    });
-
-    fireEvent.change(screen.getByPlaceholderText(/target/i), {
-      target: { value: TARGET },
-    });
-
-    await waitFor(() => {
+  it("shows a validation error and clears the matrix for an invalid address", async () => {
+    renderWithWallet(false);
+    typeTarget(TARGET);
+    await waitFor(() =>
       expect(screen.getByTestId("role-badge-Minter")).toHaveTextContent(
-        "Minter: Granted",
-      );
-    });
+        "Granted",
+      ),
+    );
+    typeTarget("not-an-address");
+    expect(screen.getByTestId("target-error")).toBeInTheDocument();
+    expect(screen.queryByTestId("role-count")).not.toBeInTheDocument();
+    expect(screen.getByTestId("role-badge-Minter")).toHaveTextContent(
+      "Minter: —",
+    );
+  });
 
-    fireEvent.click(screen.getByTestId("grant-minter"));
+  it("alerts when the lookup fails", async () => {
+    mockHasRole.mockRejectedValue(new Error("rpc timeout"));
+    renderWithWallet(false);
+    typeTarget(TARGET);
+    expect(await screen.findByRole("alert")).toHaveTextContent("rpc timeout");
+  });
 
-    await waitFor(() => {
-      expect(mockGrantMinter).toHaveBeenCalledTimes(1);
-    });
-    expect(mockGrantMinter).toHaveBeenCalledWith(TARGET);
+  it("disables actions when the wallet is disconnected", async () => {
+    renderWithWallet(false);
+    typeTarget(TARGET);
+    await waitFor(() =>
+      expect(screen.getByTestId("role-badge-Minter")).toHaveTextContent(
+        "Granted",
+      ),
+    );
+    expect(screen.getByTestId("open-grant")).toBeDisabled();
+    expect(screen.getByTestId("revoke-minter")).toBeDisabled();
+  });
 
+  it("disables actions when the caller is not an admin", async () => {
+    mockHasRole.mockResolvedValue(false);
+    renderWithWallet(true);
+    typeTarget(TARGET);
+    expect(await screen.findByTestId("not-admin")).toBeInTheDocument();
+    expect(screen.getByTestId("open-grant")).toBeDisabled();
+  });
+
+  it("grants Minter through the modal and shows success", async () => {
+    await connectedWithTarget();
+    fireEvent.click(screen.getByTestId("open-grant"));
+    expect(screen.getByTestId("grant-role-modal")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Grant" }));
+    await waitFor(() => expect(mockGrantMinter).toHaveBeenCalledWith(TARGET));
     expect(await screen.findByRole("status")).toHaveTextContent("GRANTHASH1");
   });
 
-  it("disables grant/revoke actions when the wallet is disconnected", async () => {
-    renderWithWallet(false);
-
-    fireEvent.change(screen.getByPlaceholderText(/target/i), {
-      target: { value: TARGET },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("role-badge-Minter")).toHaveTextContent(
-        "Minter: Granted",
-      );
-    });
-
-    expect(screen.getByTestId("grant-minter")).toBeDisabled();
-    expect(screen.getByTestId("revoke-minter")).toBeDisabled();
-    expect(screen.getByTestId("grant-super-admin")).toBeDisabled();
-    expect(screen.getByTestId("revoke-super-admin")).toBeDisabled();
-    expect(mockGrantMinter).not.toHaveBeenCalled();
+  it("grants SuperAdmin when selected in the dropdown", async () => {
+    await connectedWithTarget();
+    fireEvent.click(screen.getByTestId("open-grant"));
+    fireEvent.click(
+      within(screen.getByTestId("grant-role-modal")).getByRole("button", {
+        expanded: false,
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Super Admin" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Grant" }));
+    await waitFor(() =>
+      expect(mockGrantSuperAdmin).toHaveBeenCalledWith(TARGET),
+    );
   });
 
-  it("disables actions while the target address is empty", async () => {
-    renderWithWallet(true);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
-        "GBRP…YOXT",
-      );
-    });
-
-    expect(screen.getByTestId("grant-minter")).toBeDisabled();
+  it("shows an error inside the grant modal when the grant is rejected", async () => {
+    mockGrantMinter.mockRejectedValue(new Error("user rejected"));
+    await connectedWithTarget();
+    fireEvent.click(screen.getByTestId("open-grant"));
+    fireEvent.click(screen.getByRole("button", { name: "Grant" }));
+    expect(await screen.findByText("user rejected")).toBeInTheDocument();
+    expect(screen.getByTestId("grant-role-modal")).toBeInTheDocument();
   });
 
-  it("surfaces an Alert when the grant transaction fails", async () => {
-    mockGrantMinter.mockResolvedValue({ success: false, hash: "FAILHASH" });
-    renderWithWallet(true);
+  it("requires confirmation before revoking Minter", async () => {
+    await connectedWithTarget();
+    fireEvent.click(screen.getByTestId("revoke-minter"));
+    const confirm = screen.getByRole("button", { name: "Revoke" });
+    expect(confirm).toBeDisabled();
+    expect(mockRevokeMinter).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(mockRevokeMinter).toHaveBeenCalledWith(TARGET));
+    expect(await screen.findByRole("status")).toHaveTextContent("REVOKEHASH1");
+  });
 
-    await waitFor(() => {
-      expect(screen.getByTestId("roles-connected-account")).toHaveTextContent(
-        "GBRP…YOXT",
-      );
-    });
-
-    fireEvent.change(screen.getByPlaceholderText(/target/i), {
-      target: { value: TARGET },
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId("role-badge-Minter")).toHaveTextContent(
-        "Minter: Granted",
-      );
-    });
-
-    fireEvent.click(screen.getByTestId("grant-minter"));
-
-    expect(await screen.findByRole("alert")).toHaveTextContent("FAILHASH");
+  it("shows an alert when the revoke transaction fails", async () => {
+    mockRevokeMinter.mockResolvedValue({ success: false, hash: "FAILHASH" });
+    await connectedWithTarget();
+    fireEvent.click(screen.getByTestId("revoke-minter"));
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+    expect(await screen.findByText(/FAILHASH/)).toBeInTheDocument();
   });
 });
