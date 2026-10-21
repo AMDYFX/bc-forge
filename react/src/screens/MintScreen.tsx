@@ -1,27 +1,46 @@
 // SPDX-License-Identifier: MIT
 import React, { useState } from "react";
 import { Role } from "@bc-forge/sdk";
-import { useHasRole, useMint, useWallet } from "../hooks";
+import { useHasRole, useMint, useSimulateTransaction, useWallet } from "../hooks";
 import { truncatePublicKey } from "../context";
 import { isPositiveInteger } from "../utils";
 import { Alert } from "../components/Alert";
+import { ExternalLink } from "../components/ExternalLink";
+import { theme } from "../theme";
+
+export type MintStep =
+  | "form"
+  | "simulating"
+  | "confirming"
+  | "submitting"
+  | "success";
+
+const STEP_LABEL: Record<Exclude<MintStep, "form" | "success">, string> = {
+  simulating: "Simulating transaction…",
+  confirming: "Waiting for wallet signature…",
+  submitting: "Submitting to network…",
+};
 
 export interface MintScreenProps {
   /** Optional container style */
   style?: React.CSSProperties;
   /** Optional container CSS class */
   className?: string;
+  /** Block explorer base URL, e.g. https://stellar.expert/explorer/testnet/tx */
+  explorerUrl?: string;
 }
 
 /**
- * Token mint screen (#903, #1189, #1204, #1205). Collects a recipient address and a positive
- * integer amount, then submits through the connected wallet via `useMint`.
- * Features caller minter role checking, reactive helper text feedback, and immediate validation.
- * The component never asks for a secret key.
+ * Token mint screen (#903, #1189, #1204, #1205, #1207, #1208, #1209).
  */
-export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
+export const MintScreen: React.FC<MintScreenProps> = ({
+  style,
+  className,
+  explorerUrl = "https://stellar.expert/explorer/testnet/tx",
+}) => {
   const { publicKey, connected } = useWallet();
-  const { mint, loading } = useMint();
+  const { mint, loading: mintLoading } = useMint();
+  const { simulateMint, loading: simulating } = useSimulateTransaction();
   const { data: isMinter, loading: roleLoading } = useHasRole(
     Role.Minter,
     connected ? (publicKey ?? undefined) : undefined,
@@ -31,12 +50,20 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
   const [amount, setAmount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
+  const [step, setStep] = useState<MintStep>("form");
+  const [simulatedFee, setSimulatedFee] = useState<string | null>(null);
 
   const trimmedRecipient = recipient.trim();
   const trimmedAmount = amount.trim();
   const recipientValid = trimmedRecipient.length > 0;
   const amountValid = isPositiveInteger(trimmedAmount);
   const lacksMinterRole = connected && isMinter === false;
+  const isBusy =
+    step === "simulating" ||
+    step === "confirming" ||
+    step === "submitting" ||
+    mintLoading ||
+    simulating;
 
   // Immediate validation for non-integer, negative, decimal, or exponential input (#1205)
   const amountValidationError = React.useMemo(() => {
@@ -57,16 +84,25 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
     recipientValid &&
     amountValid &&
     !amountValidationError &&
-    !loading &&
+    !isBusy &&
     !roleLoading &&
     !lacksMinterRole;
+
+  const reset = () => {
+    setRecipient("");
+    setAmount("");
+    setError(null);
+    setTxHash(null);
+    setSimulatedFee(null);
+    setStep("form");
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setTxHash(null);
 
-    if (!connected) {
+    if (!connected || !publicKey) {
       setError("Connect a wallet before minting.");
       return;
     }
@@ -83,17 +119,36 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
       return;
     }
 
+    const parsedAmount = BigInt(trimmedAmount);
+
+    setStep("simulating");
     try {
-      // No Keypair: the connected wallet adapter signs and is the source.
-      const result = await mint(trimmedRecipient, BigInt(trimmedAmount));
+      const { fee } = await simulateMint(
+        trimmedRecipient,
+        parsedAmount,
+        publicKey,
+      );
+      setSimulatedFee(fee);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setStep("form");
+      return;
+    }
+
+    setStep("confirming");
+    try {
+      const result = await mint(trimmedRecipient, parsedAmount);
+      setStep("submitting");
       if (result.success) {
         setTxHash(result.hash);
-        setAmount("");
+        setStep("success");
       } else {
         setError(`Mint failed with transaction hash: ${result.hash}`);
+        setStep("form");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setStep("form");
     }
   };
 
@@ -212,107 +267,187 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
         </Alert>
       )}
 
-      {txHash && (
+      {isBusy && (
+        <div
+          data-testid="mint-progress-modal"
+          role="status"
+          aria-live="polite"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            padding: "16px",
+            border: "1px solid #bfdbfe",
+            borderRadius: "8px",
+            backgroundColor: "#eff6ff",
+            color: "#1e40af",
+          }}
+        >
+          <span
+            aria-hidden="true"
+            data-testid="mint-progress-spinner"
+            style={{
+              width: 16,
+              height: 16,
+              border: "2px solid currentColor",
+              borderRightColor: "transparent",
+              borderRadius: "50%",
+              display: "inline-block",
+              animation: "spin 0.8s linear infinite",
+            }}
+          />
+          <div>
+            <div data-testid="mint-progress-step" style={{ fontWeight: 600 }}>
+              {STEP_LABEL[step as Exclude<MintStep, "form" | "success">] ??
+                "Processing…"}
+            </div>
+            {step !== "simulating" && simulatedFee !== null && (
+              <div style={{ fontSize: "12px" }}>
+                Estimated fee: {simulatedFee} stroops
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {step === "success" && txHash && (
         <Alert
           variant="success"
           title="Mint Success"
+          data-testid="mint-success-banner"
           onDismiss={() => setTxHash(null)}
         >
-          Transaction confirmed: <code data-testid="tx-hash">{txHash}</code>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            <div>
+              Minted <strong>{trimmedAmount || amount}</strong> to{" "}
+              <code>{truncatePublicKey(trimmedRecipient)}</code>.
+            </div>
+            <div>
+              Transaction hash: <code data-testid="tx-hash">{txHash}</code>
+            </div>
+            {explorerUrl && (
+              <ExternalLink
+                href={`${explorerUrl.replace(/\/$/, "")}/${txHash}`}
+                data-testid="mint-explorer-link"
+              >
+                View on Stellar Expert
+              </ExternalLink>
+            )}
+            <button
+              type="button"
+              onClick={reset}
+              data-testid="mint-another-button"
+              style={{
+                alignSelf: "flex-start",
+                padding: "8px 14px",
+                backgroundColor: theme.primary,
+                color: "#ffffff",
+                border: "none",
+                borderRadius: "6px",
+                fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              Mint another
+            </button>
+          </div>
         </Alert>
       )}
 
-      <form
-        onSubmit={handleSubmit}
-        data-testid="mint-form"
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "16px",
-          padding: "20px",
-          border: "1px solid #e5e7eb",
-          borderRadius: "8px",
-          backgroundColor: "#ffffff",
-        }}
-      >
-        <label
+      {step !== "success" && (
+        <form
+          onSubmit={handleSubmit}
+          data-testid="mint-form"
           style={{
             display: "flex",
             flexDirection: "column",
-            gap: "6px",
-            fontSize: "14px",
+            gap: "16px",
+            padding: "20px",
+            border: "1px solid #e5e7eb",
+            borderRadius: "8px",
+            backgroundColor: "#ffffff",
           }}
         >
-          Recipient address
-          <input
-            type="text"
-            name="recipient"
-            placeholder="Recipient G... address"
-            value={recipient}
-            onChange={(e) => setRecipient(e.target.value)}
-            disabled={loading}
+          <label
             style={{
-              padding: "8px 12px",
-              border: "1px solid #d1d5db",
-              borderRadius: "6px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
               fontSize: "14px",
-              outline: "none",
             }}
-          />
-          <span style={{ fontSize: "12px", color: "#6b7280" }}>
-            The public Stellar account (G... or C... identifier) that will
-            receive newly minted tokens.
-          </span>
-        </label>
+          >
+            Recipient address
+            <input
+              type="text"
+              name="recipient"
+              placeholder="Recipient G... address"
+              value={recipient}
+              onChange={(e) => setRecipient(e.target.value)}
+              disabled={isBusy}
+              style={{
+                padding: "8px 12px",
+                border: "1px solid #d1d5db",
+                borderRadius: "6px",
+                fontSize: "14px",
+                outline: "none",
+              }}
+            />
+            <span style={{ fontSize: "12px", color: "#6b7280" }}>
+              The public Stellar account (G... or C... identifier) that will
+              receive newly minted tokens.
+            </span>
+          </label>
 
-        <label
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "6px",
-            fontSize: "14px",
-          }}
-        >
-          Amount
-          <input
-            type="text"
-            name="amount"
-            placeholder="Positive integer amount"
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-            disabled={loading}
+          <label
             style={{
-              padding: "8px 12px",
-              border: amountValidationError
-                ? "1px solid #ef4444"
-                : "1px solid #d1d5db",
-              borderRadius: "6px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
               fontSize: "14px",
-              outline: "none",
             }}
-          />
-          <span style={{ fontSize: "12px", color: "#6b7280" }}>
-            Specify the token quantity in base units (must be a positive whole
-            integer without decimals).
-          </span>
-        </label>
+          >
+            Amount
+            <input
+              type="text"
+              name="amount"
+              placeholder="Positive integer amount"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              disabled={isBusy}
+              style={{
+                padding: "8px 12px",
+                border: amountValidationError
+                  ? "1px solid #ef4444"
+                  : "1px solid #d1d5db",
+                borderRadius: "6px",
+                fontSize: "14px",
+                outline: "none",
+              }}
+            />
+            <span style={{ fontSize: "12px", color: "#6b7280" }}>
+              Specify the token quantity in base units (must be a positive whole
+              integer without decimals).
+            </span>
+          </label>
 
-        <button
-          type="submit"
-          disabled={!canSubmit}
-          style={{
-            padding: "10px 16px",
-            backgroundColor: !canSubmit ? "#9ca3af" : "#2563eb",
-            color: "#ffffff",
-            border: "none",
-            borderRadius: "6px",
-            fontWeight: 500,
-            cursor: !canSubmit ? "not-allowed" : "pointer",
-          }}
-        >
-          {loading ? "Minting…" : "Mint"}
-        </button>
-      </form>
+          <button
+            type="submit"
+            disabled={!canSubmit}
+            data-testid="mint-submit"
+            style={{
+              padding: "10px 16px",
+              backgroundColor: !canSubmit ? "#9ca3af" : "#2563eb",
+              color: "#ffffff",
+              border: "none",
+              borderRadius: "6px",
+              fontWeight: 500,
+              cursor: !canSubmit ? "not-allowed" : "pointer",
+            }}
+          >
+            {isBusy ? "Minting…" : "Mint"}
+          </button>
+        </form>
+      )}
     </div>
   );
 };

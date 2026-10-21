@@ -616,6 +616,77 @@ export function useBalance(address: string | undefined) {
 }
 
 /**
+ * Outcome of a pre-flight mint simulation (#1207).
+ */
+export interface MintSimulation {
+  /** Estimated Soroban resource fee, in stroops, as reported by the simulation. */
+  fee: string;
+}
+
+/**
+ * Hook to run a pre-flight `simulateTransaction` for a mint, without
+ * prompting a wallet signature or submitting anything on-chain.
+ *
+ * Resolves with the estimated resource fee on success, or throws with the
+ * contract's revert reason (as surfaced by the RPC simulation error) on
+ * failure. Call this before {@link useMint} to gate the signature prompt on a
+ * simulation that is already known to succeed.
+ */
+export function useSimulateTransaction() {
+  const client = useBcForgeClient();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const simulateMint = useCallback(
+    async (
+      to: string,
+      amount: bigint,
+      sourcePublicKey: string,
+    ): Promise<MintSimulation> => {
+      try {
+        setLoading(true);
+        setError(null);
+        const simulated = await client.simulateMint(
+          to,
+          amount,
+          sourcePublicKey,
+        );
+        const fee = extractSimulatedFee(simulated);
+        return { fee };
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        setError(error);
+        throw error;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [client],
+  );
+
+  return { simulateMint, loading, error };
+}
+
+/**
+ * Pulls `minResourceFee` off a successful Soroban simulation response without
+ * taking a compile-time dependency on `@stellar/stellar-sdk`'s RPC types:
+ * `bcForgeClient.simulateMint` is typed `Promise<unknown>` because the
+ * underlying `simulateTransaction` call returns the raw RPC response.
+ */
+function extractSimulatedFee(simulated: unknown): string {
+  if (
+    simulated &&
+    typeof simulated === "object" &&
+    "minResourceFee" in simulated &&
+    typeof (simulated as { minResourceFee: unknown }).minResourceFee ===
+      "string"
+  ) {
+    return (simulated as { minResourceFee: string }).minResourceFee;
+  }
+  return "0";
+}
+
+/**
  * Hook to perform mint operations.
  *
  * `source` is optional: when omitted, the connected wallet adapter signs the
