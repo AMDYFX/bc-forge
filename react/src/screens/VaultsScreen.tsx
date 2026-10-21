@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-import React, { useState, useEffect, useCallback, useMemo } from "react";
-import { VaultClient, calculateApy } from "@bc-forge/sdk";
-import type { ApyResult, WalletAdapter } from "@bc-forge/sdk";
-import { Alert } from "../components/Alert";
-import { isPositiveInteger } from "../utils";
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { VaultClient, calculateApy } from '@bc-forge/sdk';
+import type { ApyResult, WalletAdapter } from '@bc-forge/sdk';
+import { Alert } from '../components/Alert';
+import { useOptionalBcForgeClient, useWalletContext } from '../context';
+import { isPositiveInteger } from '../utils';
 
 export interface VaultsScreenProps {
   /** Optional pre-instantiated VaultClient instance */
@@ -53,10 +54,17 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingMetrics, setIsLoadingMetrics] = useState(false);
 
+  const walletCtx = useWalletContext();
+  const contextClient = useOptionalBcForgeClient();
+  const effectiveAdapter =
+    walletAdapter ??
+    walletCtx?.adapter ??
+    (contextClient as any)?.getWalletAdapter?.() ??
+    undefined;
   const connectedAddress =
     walletAddress ||
-    (walletAdapter?.connected ? walletAdapter.publicKey : undefined) ||
-    walletAdapter?.publicKey;
+    (effectiveAdapter?.connected ? effectiveAdapter.publicKey : undefined) ||
+    effectiveAdapter?.publicKey;
 
   const isConnected = Boolean(connectedAddress);
 
@@ -84,11 +92,11 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
         rpcUrl,
         networkPassphrase,
         contractId,
-        walletAdapter,
+        walletAdapter: effectiveAdapter,
       });
     }
     return null;
-  }, [client, rpcUrl, networkPassphrase, contractId, walletAdapter]);
+  }, [client, rpcUrl, networkPassphrase, contractId, effectiveAdapter]);
 
   const activeRpcUrl =
     rpcUrl || (activeClient as unknown as { rpcUrl?: string })?.rpcUrl;
@@ -181,7 +189,7 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       const result = await activeClient.deposit(
         connectedAddress,
         amountBigInt,
-        walletAdapter as unknown as import("@stellar/stellar-sdk").Keypair,
+        (effectiveAdapter ?? walletAdapter) as unknown as import('@stellar/stellar-sdk').Keypair,
       );
       if (result && result.success) {
         setSuccessTx(result.hash);
@@ -229,7 +237,7 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       const result = await activeClient.withdraw(
         connectedAddress,
         sharesBigInt,
-        walletAdapter as unknown as import("@stellar/stellar-sdk").Keypair,
+        (effectiveAdapter ?? walletAdapter) as unknown as import('@stellar/stellar-sdk').Keypair,
       );
       if (result && result.success) {
         setSuccessTx(result.hash);

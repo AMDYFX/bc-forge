@@ -568,23 +568,26 @@ export class VaultClient {
     args: xdr.ScVal[],
     source?: Keypair,
   ): Promise<TransactionResult> {
-    const adapter = source ? undefined : this.walletAdapter;
-    if (!source && !adapter) throw new SignerRequiredError();
-    if (!source && (!adapter?.connected || !adapter.publicKey)) {
+    const isAdapter = Boolean(source && typeof (source as any).signTransaction === 'function' && typeof (source as any).secret !== 'function');
+    const adapter = isAdapter ? (source as unknown as WalletAdapter) : (source ? undefined : this.walletAdapter);
+    const actualSource = isAdapter ? undefined : source;
+
+    if (!actualSource && !adapter) throw new SignerRequiredError();
+    if (!actualSource && (!adapter?.connected || !adapter.publicKey)) {
       throw new SignerRequiredError('Wallet adapter is not connected');
     }
 
     return this.withRetry(async () => {
       try {
         let txXdr: string;
-        if (source) {
+        if (actualSource) {
           txXdr = await buildInvokeTransaction(
             this.rpcUrl,
             this.networkPassphrase,
             this.contractId,
             method,
             args,
-            source,
+            actualSource,
           );
         } else {
           const unsignedXdr = await buildUnsignedTransaction(
@@ -603,14 +606,14 @@ export class VaultClient {
         if (response.status === SorobanRpc.Api.GetTransactionStatus.SUCCESS) {
           return {
             success: true,
-            hash: response.txHash,
+            hash: (response as unknown as { hash?: string; txHash?: string }).hash ?? response.txHash,
             returnValue: response.returnValue ? scValToNative(response.returnValue) : undefined,
           };
         }
 
         return {
           success: false,
-          hash: response.txHash,
+          hash: (response as unknown as { hash?: string; txHash?: string }).hash ?? response.txHash,
         };
       } catch (error: unknown) {
         if (error instanceof SimulationError || error instanceof SignerRequiredError) throw error;
