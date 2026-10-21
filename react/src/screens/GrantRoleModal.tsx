@@ -61,6 +61,8 @@ export const GrantRoleModal: React.FC<GrantRoleModalProps> = ({
     }
   };
 
+  const isSuperAdmin = role === Role.SuperAdmin;
+
   return (
     <ConfirmationDialog
       open={open}
@@ -71,11 +73,20 @@ export const GrantRoleModal: React.FC<GrantRoleModalProps> = ({
       onConfirm={() => {
         void submit();
       }}
-      title="Grant role"
-      description={`Grant a role to ${target}.`}
-      variant="warning"
-      confirmationMode="none"
-      confirmLabel="Grant"
+      title={isSuperAdmin ? "Grant SuperAdmin access?" : "Grant role"}
+      description={
+        isSuperAdmin
+          ? "This transfers full governance control over role assignments for the contract."
+          : `Grant a role to ${target}.`
+      }
+      variant={isSuperAdmin ? "danger" : "warning"}
+      confirmationMode={isSuperAdmin ? "checkbox" : "none"}
+      confirmationLabel={
+        isSuperAdmin
+          ? "I verified the target address and reviewed the security checklist."
+          : undefined
+      }
+      confirmLabel={isSuperAdmin ? "Grant SuperAdmin" : "Grant"}
       busyLabel="Granting…"
       busy={busy}
     >
@@ -92,6 +103,15 @@ export const GrantRoleModal: React.FC<GrantRoleModalProps> = ({
           disabled={busy}
           placeholder="Select role"
         />
+        {isSuperAdmin && (
+          <ul>
+            <li>The recipient can grant and revoke privileged roles.</li>
+            <li>
+              Only proceed after verifying the target address with the
+              recipient.
+            </li>
+          </ul>
+        )}
         {error && (
           <Alert variant="danger" title="Error">
             {error}

@@ -10,7 +10,6 @@ import {
 import { useOptionalBcForgeClient, useWalletContext } from "../context";
 import { isPositiveInteger } from "../utils";
 
-
 export interface VaultsScreenProps {
   /** Optional pre-instantiated VaultClient instance */
   client?: VaultClient;
@@ -126,7 +125,6 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       ? null
       : quoteUnderlying(shareBalance, totalAssets, totalShares);
 
-
   const activeClient = useMemo(() => {
     if (client) return client;
     if (rpcUrl && networkPassphrase && contractId) {
@@ -203,9 +201,11 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   ]);
 
   useEffect(() => {
-    void (async () => {
-      await loadData();
-    })();
+    void loadData();
+    const interval = window.setInterval(() => {
+      void loadData();
+    }, 30_000);
+    return () => window.clearInterval(interval);
   }, [loadData]);
 
   const handleDeposit = async (e: React.FormEvent) => {
@@ -242,7 +242,8 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       const result = await activeClient.deposit(
         connectedAddress,
         amountBigInt,
-        (effectiveAdapter ?? walletAdapter) as unknown as import("@stellar/stellar-sdk").Keypair,
+        (effectiveAdapter ??
+          walletAdapter) as unknown as import("@stellar/stellar-sdk").Keypair,
         minimumAfterSlippage(estimatedDepositShares, slippageBps),
       );
       if (result && result.success) {
@@ -302,7 +303,8 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
       const result = await activeClient.withdraw(
         connectedAddress,
         sharesBigInt,
-        (effectiveAdapter ?? walletAdapter) as unknown as import("@stellar/stellar-sdk").Keypair,
+        (effectiveAdapter ??
+          walletAdapter) as unknown as import("@stellar/stellar-sdk").Keypair,
         minimumAfterSlippage(quote, slippageBps),
       );
       if (result && result.success) {

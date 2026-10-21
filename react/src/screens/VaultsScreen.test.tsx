@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: MIT
 import "@testing-library/jest-dom";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from "@testing-library/react";
 import { VaultClient, calculateApy } from "@bc-forge/sdk";
 import type { WalletAdapter } from "@bc-forge/sdk";
 import { VaultsScreen, EMPTY_STATE_APY_MESSAGE } from "./VaultsScreen";
@@ -114,6 +120,20 @@ describe("VaultsScreen", () => {
     expect(mockClient.getShareBalance).toHaveBeenCalledWith(
       mockAdapter.publicKey,
     );
+  });
+
+  it("refreshes vault metrics every 30 seconds", async () => {
+    (calculateApy as jest.Mock).mockResolvedValue(null);
+    jest.useFakeTimers();
+    const { unmount } = render(<VaultsScreen client={mockClient} />);
+
+    act(() => jest.advanceTimersByTime(0));
+    expect(mockClient.getTotalAssets).toHaveBeenCalledTimes(1);
+    act(() => jest.advanceTimersByTime(30_000));
+    expect(mockClient.getTotalAssets).toHaveBeenCalledTimes(2);
+
+    unmount();
+    jest.useRealTimers();
   });
 
   it("disables deposit and withdraw forms when no wallet is connected", async () => {

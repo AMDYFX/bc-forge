@@ -12,6 +12,7 @@ import { Role } from "@bc-forge/sdk";
 import { BcForgeProvider, WalletProvider } from "../context";
 import { useWallet } from "../hooks";
 import { RolesScreen } from "./RolesScreen";
+import { exportRbacReport } from "../utils";
 
 const TARGET = "GAVTHAJHFEHX4PZ7GR6O5V2DSJ6G6J4U5XQZ4XK7X5XQZ4XK7X5XQZ4A";
 const CALLER = "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT";
@@ -21,6 +22,7 @@ const mockGrantMinter = jest.fn();
 const mockRevokeMinter = jest.fn();
 const mockGrantSuperAdmin = jest.fn();
 const mockRevokeSuperAdmin = jest.fn();
+const mockGetEvents = jest.fn().mockResolvedValue([]);
 
 jest.mock("@bc-forge/sdk", () => ({
   Role: {
@@ -43,6 +45,7 @@ jest.mock("@bc-forge/sdk", () => ({
       revokeMinter: (...args: unknown[]) => mockRevokeMinter(...args),
       grantSuperAdmin: (...args: unknown[]) => mockGrantSuperAdmin(...args),
       revokeSuperAdmin: (...args: unknown[]) => mockRevokeSuperAdmin(...args),
+      getEvents: (...args: unknown[]) => mockGetEvents(...args),
       setWalletAdapter: jest.fn(),
       getContractId: () => config?.contractId ?? "",
     };
@@ -236,7 +239,11 @@ describe("RolesScreen", () => {
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Super Admin" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Grant" }));
+    const confirm = screen.getByRole("button", { name: "Grant SuperAdmin" });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
     await waitFor(() =>
       expect(mockGrantSuperAdmin).toHaveBeenCalledWith(TARGET),
     );
@@ -308,5 +315,46 @@ describe("RolesScreen", () => {
       "not-granted",
     );
   });
+
+  it("exports role assignments in the selected format", async () => {
+    await connectedWithTarget();
+    const createObjectURL = jest.fn(() => "blob:mock");
+    const revokeObjectURL = jest.fn();
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = createObjectURL;
+    URL.revokeObjectURL = revokeObjectURL;
+
+    fireEvent.change(screen.getByLabelText("Export format"), {
+      target: { value: "json" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Export permissions" }));
+
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalled());
+
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = revokeObjectURL;
+  });
 });
 
+describe("exportRbacReport", () => {
+  it("creates timestamped JSON and CSV reports with address and audit data", () => {
+    const roles = { Admin: true, Minter: false };
+    const events = [{ type: "role_granted", ledger: 42n }];
+    const timestamp = "2026-10-19T12:30:00.000Z";
+
+    const json = exportRbacReport(TARGET, roles, events, "json", timestamp);
+    expect(json.filename).toBe("rbac-report-2026-10-19T12-30-00-000Z.json");
+    expect(JSON.parse(json.content)).toEqual({
+      exportedAt: timestamp,
+      roleAssignments: [{ address: TARGET, roles }],
+      auditHistory: [{ type: "role_granted", ledger: "42" }],
+    });
+
+    const csv = exportRbacReport(TARGET, roles, events, "csv", timestamp);
+    expect(csv.content).toContain('"role","' + TARGET + '","Admin","true"');
+    expect(csv.content).toContain(
+      '"audit","","","","{""type"":""role_granted"",""ledger"":""42""}"',
+    );
+  });
+});
