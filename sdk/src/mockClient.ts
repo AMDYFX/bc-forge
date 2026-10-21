@@ -443,6 +443,7 @@ export class MockVaultClient {
     if (!this.allowances[from]) this.allowances[from] = {};
     this.allowances[from][spender] = amount;
     return { success: true, hash: 'mock-hash', returnValue: null };
+  }
 
   async extendTtl(
     _thresholdLedgers?: number,
@@ -455,7 +456,6 @@ export class MockVaultClient {
   async getVestingInfo(_beneficiary: string, _vestingContractId?: string): Promise<unknown[]> {
     return [];
   }
-
 
   private mockEvents: unknown[] = [];
   private mockAccountSequences: Record<string, bigint> = {};
