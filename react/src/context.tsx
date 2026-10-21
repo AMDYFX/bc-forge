@@ -203,11 +203,22 @@ export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({
   config,
   vaultConfig,
   children,
+  defaultNetwork,
+  networks: extraNetworks,
+  rpcUrls,
+  contractIds,
+  onNetworkChange,
 }) => {
-  const client = useMemo(() => new bcForgeClient(config), [config]);
-  const vaultClient = useMemo(
-    () => (vaultConfig ? new VaultClient(vaultConfig) : null),
-    [vaultConfig],
+  const [selectedNetworkId, setSelectedNetworkId] = useState<NetworkId | null>(defaultNetwork ?? null);
+  const [switchingId, setSwitchingId] = useState<NetworkId | null>(null);
+  const [switchError, setSwitchError] = useState<Error | null>(null);
+
+  const networks = useMemo(
+    () =>
+      extraNetworks && extraNetworks.length > 0
+        ? [...STELLAR_NETWORKS, ...extraNetworks]
+        : STELLAR_NETWORKS,
+    [extraNetworks],
   );
   const networkIndex = useMemo(
     () =>
