@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { VaultClient, calculateApy } from '@bc-forge/sdk';
-import type { ApyResult, WalletAdapter } from '@bc-forge/sdk';
-import { Alert } from '../components/Alert';
-import { useOptionalBcForgeClient, useWalletContext } from '../context';
-import { isPositiveInteger } from '../utils';
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import { VaultClient, calculateApy } from "@bc-forge/sdk";
+import type { ApyResult, WalletAdapter } from "@bc-forge/sdk";
+import { Alert } from "../components/Alert";
+import {
+  TransactionToast,
+  type TransactionToastStatus,
+} from "../components/TransactionToast";
+import { useOptionalBcForgeClient, useWalletContext } from "../context";
+import { isPositiveInteger } from "../utils";
+
 
 export interface VaultsScreenProps {
   /** Optional pre-instantiated VaultClient instance */
@@ -30,6 +35,28 @@ export interface VaultsScreenProps {
 export const EMPTY_STATE_APY_MESSAGE =
   "Vault has no outstanding shares or insufficient historical data.";
 
+function parseSlippageBps(value: string): bigint | null {
+  const match = /^(\d{1,3})(?:\.(\d{1,2}))?$/.exec(value.trim());
+  if (!match) return null;
+  const whole = BigInt(match[1] ?? "0");
+  const fraction = BigInt((match[2] ?? "").padEnd(2, "0") || "0");
+  const bps = whole * 100n + fraction;
+  return bps <= 10_000n ? bps : null;
+}
+
+function minimumAfterSlippage(amount: bigint, slippageBps: bigint): bigint {
+  return (amount * (10_000n - slippageBps)) / 10_000n;
+}
+
+function quoteUnderlying(
+  shares: bigint,
+  assets: bigint | null,
+  supply: bigint | null,
+): bigint | null {
+  if (assets === null || supply === null || supply <= 0n) return null;
+  return (shares * assets) / supply;
+}
+
 export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   client,
   rpcUrl,
@@ -49,8 +76,14 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
 
   const [depositAmount, setDepositAmount] = useState("");
   const [withdrawAmount, setWithdrawAmount] = useState("");
+  const [slippageChoice, setSlippageChoice] = useState("0.5");
+  const [customSlippage, setCustomSlippage] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [successTx, setSuccessTx] = useState<string | null>(null);
+  const [toast, setToast] = useState<{
+    status: TransactionToastStatus;
+    hash?: string;
+    message?: string;
+  } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingMetrics, setIsLoadingMetrics] = useState(false);
 
@@ -67,23 +100,32 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
     effectiveAdapter?.publicKey;
 
   const isConnected = Boolean(connectedAddress);
+  const slippageBps = parseSlippageBps(
+    slippageChoice === "custom" ? customSlippage : slippageChoice,
+  );
+  const parsedDepositAmount = isPositiveInteger(depositAmount)
+    ? BigInt(depositAmount.trim())
+    : null;
+  const estimatedDepositShares =
+    parsedDepositAmount === null
+      ? null
+      : totalShares === 0n
+        ? parsedDepositAmount
+        : totalAssets !== null && totalAssets > 0n && totalShares !== null
+          ? (parsedDepositAmount * totalShares) / totalAssets
+          : null;
+  const parsedWithdrawAmount = isPositiveInteger(withdrawAmount)
+    ? BigInt(withdrawAmount.trim())
+    : null;
+  const withdrawEstimate =
+    parsedWithdrawAmount === null
+      ? null
+      : quoteUnderlying(parsedWithdrawAmount, totalAssets, totalShares);
+  const positionValue =
+    shareBalance === null
+      ? null
+      : quoteUnderlying(shareBalance, totalAssets, totalShares);
 
-  const depositPreviewShares = useMemo(() => {
-    const trimmed = depositAmount.trim();
-    if (
-      !trimmed ||
-      !isPositiveInteger(trimmed) ||
-      sharePrice === null ||
-      sharePrice === 0n
-    ) {
-      return null;
-    }
-    const amount = BigInt(trimmed);
-    return amount / sharePrice;
-  }, [depositAmount, sharePrice]);
-
-  const hasZeroShareBalance = shareBalance === 0n;
-  const canWithdraw = isConnected && !hasZeroShareBalance && !isSubmitting;
 
   const activeClient = useMemo(() => {
     if (client) return client;
@@ -169,7 +211,7 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   const handleDeposit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSuccessTx(null);
+    setToast(null);
 
     if (!connectedAddress || !activeClient) {
       setError("Wallet must be connected to deposit");
@@ -183,28 +225,42 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
     }
 
     const amountBigInt = BigInt(trimmed);
+    if (slippageBps === null) {
+      setError("Enter a slippage tolerance between 0 and 100%.");
+      return;
+    }
+    if (estimatedDepositShares === null) {
+      setError(
+        "Deposit quote is unavailable. Refresh vault metrics and try again.",
+      );
+      return;
+    }
 
+    setToast({ status: "pending" });
     setIsSubmitting(true);
     try {
       const result = await activeClient.deposit(
         connectedAddress,
         amountBigInt,
-        (effectiveAdapter ?? walletAdapter) as unknown as import('@stellar/stellar-sdk').Keypair,
+        (effectiveAdapter ?? walletAdapter) as unknown as import("@stellar/stellar-sdk").Keypair,
+        minimumAfterSlippage(estimatedDepositShares, slippageBps),
       );
       if (result && result.success) {
-        setSuccessTx(result.hash);
+        setToast({ status: "success", hash: result.hash });
         setDepositAmount("");
         await loadData();
       } else {
-        setError(
-          result?.hash
+        setToast({
+          status: "error",
+          hash: result?.hash,
+          message: result?.hash
             ? `Deposit failed with transaction hash: ${result.hash}`
             : "Deposit transaction failed",
-        );
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      setToast({ status: "error", message });
     } finally {
       setIsSubmitting(false);
     }
@@ -213,7 +269,7 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
   const handleWithdraw = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setSuccessTx(null);
+    setToast(null);
 
     if (!connectedAddress || !activeClient) {
       setError("Wallet must be connected to withdraw");
@@ -227,32 +283,44 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
     }
 
     const sharesBigInt = BigInt(trimmed);
-    if (shareBalance !== null && sharesBigInt > shareBalance) {
-      setError("Withdraw amount cannot exceed your available shares");
+    const quote =
+      parsedWithdrawAmount === sharesBigInt ? withdrawEstimate : null;
+    if (quote === null) {
+      setError(
+        "Withdrawal quote is unavailable. Please wait for the estimate and try again.",
+      );
+      return;
+    }
+    if (slippageBps === null) {
+      setError("Enter a slippage tolerance between 0 and 100%.");
       return;
     }
 
+    setToast({ status: "pending" });
     setIsSubmitting(true);
     try {
       const result = await activeClient.withdraw(
         connectedAddress,
         sharesBigInt,
-        (effectiveAdapter ?? walletAdapter) as unknown as import('@stellar/stellar-sdk').Keypair,
+        (effectiveAdapter ?? walletAdapter) as unknown as import("@stellar/stellar-sdk").Keypair,
+        minimumAfterSlippage(quote, slippageBps),
       );
       if (result && result.success) {
-        setSuccessTx(result.hash);
+        setToast({ status: "success", hash: result.hash });
         setWithdrawAmount("");
         await loadData();
       } else {
-        setError(
-          result?.hash
+        setToast({
+          status: "error",
+          hash: result?.hash,
+          message: result?.hash
             ? `Withdraw failed with transaction hash: ${result.hash}`
             : "Withdraw transaction failed",
-        );
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      setToast({ status: "error", message });
     } finally {
       setIsSubmitting(false);
     }
@@ -288,14 +356,14 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
         </Alert>
       )}
 
-      {successTx && (
-        <Alert
-          variant="success"
-          title="Transaction Success"
-          onDismiss={() => setSuccessTx(null)}
-        >
-          Transaction confirmed: <code data-testid="tx-hash">{successTx}</code>
-        </Alert>
+      {toast && (
+        <TransactionToast
+          status={toast.status}
+          hash={toast.hash}
+          error={toast.message}
+          label={toast.status === "pending" ? "Vault transaction" : undefined}
+          onDismiss={() => setToast(null)}
+        />
       )}
 
       {/* Metrics Section */}
@@ -425,6 +493,45 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
         </div>
       </div>
 
+      <section
+        aria-labelledby="vault-position-title"
+        data-testid="vault-position"
+        style={{
+          padding: "16px",
+          border: "1px solid #e5e7eb",
+          borderRadius: "8px",
+        }}
+      >
+        <h2
+          id="vault-position-title"
+          style={{ margin: "0 0 12px", fontSize: "18px" }}
+        >
+          Your Vault Position
+        </h2>
+        <div>
+          Shares owned:{" "}
+          <span data-testid="position-shares">
+            {shareBalance?.toString() ?? "—"}
+          </span>
+        </div>
+        <div>
+          Estimated value:{" "}
+          <span data-testid="position-value">
+            {positionValue?.toString() ?? "—"}
+          </span>{" "}
+          tokens
+        </div>
+        <div>
+          Estimated yield vs. 1:1 share basis:{" "}
+          <span data-testid="position-yield">
+            {positionValue === null || shareBalance === null
+              ? "—"
+              : (positionValue - shareBalance).toString()}
+          </span>{" "}
+          tokens
+        </div>
+      </section>
+
       {/* APY Section */}
       <div
         style={{
@@ -509,15 +616,62 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
               }}
             />
           </label>
-          <div
-            style={{ fontSize: "13px", color: "#4b5563", minHeight: "20px" }}
+          <label
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "6px",
+              fontSize: "14px",
+            }}
           >
-            {depositAmount.trim() &&
-            isPositiveInteger(depositAmount.trim()) &&
-            sharePrice !== null &&
-            sharePrice !== 0n
-              ? `You will receive ~${depositPreviewShares?.toString() ?? "0"} vault shares`
-              : "Enter an amount to preview the shares minted."}
+            Slippage tolerance
+            <select
+              aria-label="Slippage tolerance"
+              value={slippageChoice}
+              onChange={(e) => setSlippageChoice(e.target.value)}
+              disabled={isSubmitting}
+              style={{
+                padding: "8px 12px",
+                border: "1px solid #d1d5db",
+                borderRadius: "6px",
+              }}
+            >
+              <option value="0.5">0.5%</option>
+              <option value="1.0">1.0%</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          {slippageChoice === "custom" && (
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "6px",
+                fontSize: "14px",
+              }}
+            >
+              Custom slippage (%)
+              <input
+                aria-label="Custom slippage (%)"
+                inputMode="decimal"
+                value={customSlippage}
+                onChange={(e) => setCustomSlippage(e.target.value)}
+                disabled={isSubmitting}
+                style={{
+                  padding: "8px 12px",
+                  border: "1px solid #d1d5db",
+                  borderRadius: "6px",
+                }}
+              />
+            </label>
+          )}
+          <div
+            data-testid="deposit-share-estimate"
+            style={{ fontSize: "13px", color: "#4b5563" }}
+          >
+            {estimatedDepositShares === null
+              ? "Enter an amount to preview shares."
+              : `Estimated shares: ${estimatedDepositShares.toString()}`}
           </div>
           <button
             type="submit"
@@ -563,53 +717,30 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
             }}
           >
             Shares
-            <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-              <input
-                type="text"
-                name="withdrawAmount"
-                placeholder="Enter positive integer shares"
-                value={withdrawAmount}
-                onChange={(e) => setWithdrawAmount(e.target.value)}
-                disabled={!isConnected || isSubmitting}
-                style={{
-                  flex: 1,
-                  padding: "8px 12px",
-                  border: "1px solid #d1d5db",
-                  borderRadius: "6px",
-                  fontSize: "14px",
-                  outline: "none",
-                }}
-              />
-              <button
-                type="button"
-                onClick={() =>
-                  setWithdrawAmount(
-                    shareBalance !== null ? shareBalance.toString() : "",
-                  )
-                }
-                disabled={
-                  !canWithdraw || shareBalance === null || shareBalance === 0n
-                }
-                style={{
-                  padding: "8px 10px",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "6px",
-                  backgroundColor:
-                    !canWithdraw || shareBalance === null || shareBalance === 0n
-                      ? "#e5e7eb"
-                      : "#ffffff",
-                  color: "#111827",
-                  fontWeight: 600,
-                  cursor:
-                    !canWithdraw || shareBalance === null || shareBalance === 0n
-                      ? "not-allowed"
-                      : "pointer",
-                }}
-              >
-                MAX
-              </button>
-            </div>
+            <input
+              type="text"
+              name="withdrawAmount"
+              placeholder="Enter positive integer shares"
+              value={withdrawAmount}
+              onChange={(e) => setWithdrawAmount(e.target.value)}
+              disabled={!isConnected || isSubmitting}
+              style={{
+                padding: "8px 12px",
+                border: "1px solid #d1d5db",
+                borderRadius: "6px",
+                fontSize: "14px",
+                outline: "none",
+              }}
+            />
           </label>
+          <div
+            data-testid="withdraw-estimate"
+            style={{ fontSize: "13px", color: "#4b5563" }}
+          >
+            {withdrawEstimate !== null
+              ? `You will receive ~${withdrawEstimate.toString()} tokens (no withdrawal fee)`
+              : "Enter an amount to preview tokens returned."}
+          </div>
           <button
             type="submit"
             disabled={
@@ -621,23 +752,12 @@ export const VaultsScreen: React.FC<VaultsScreenProps> = ({
             style={{
               padding: "10px 16px",
               backgroundColor:
-                !isConnected ||
-                isSubmitting ||
-                shareBalance === null ||
-                shareBalance === 0n
-                  ? "#9ca3af"
-                  : "#2563eb",
+                !isConnected || isSubmitting ? "#9ca3af" : "#2563eb",
               color: "#ffffff",
               border: "none",
               borderRadius: "6px",
               fontWeight: 500,
-              cursor:
-                !isConnected ||
-                isSubmitting ||
-                shareBalance === null ||
-                shareBalance === 0n
-                  ? "not-allowed"
-                  : "pointer",
+              cursor: !isConnected || isSubmitting ? "not-allowed" : "pointer",
             }}
           >
             {isSubmitting ? "Processing..." : "Withdraw"}
