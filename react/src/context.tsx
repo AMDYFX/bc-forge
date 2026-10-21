@@ -56,14 +56,14 @@ export {
   resolveTheme,
   storeTheme,
   useTheme,
-} from './theme/ThemeProvider';
+} from "./theme/ThemeProvider";
 export type {
   ResolvedTheme,
   Theme,
   ThemeContextValue,
   ThemeProviderProps,
   ThemeScriptProps,
-} from './theme/ThemeProvider';
+} from "./theme/ThemeProvider";
 
 interface BcForgeContextType {
   client: bcForgeClient | null;
@@ -88,7 +88,7 @@ interface BcForgeContextType {
 // ─── Multi-network switching (#1148) ────────────────────────────────────────
 
 /** Networks {@link BcForgeProvider} can switch between (#1148). */
-export type NetworkId = 'testnet' | 'futurenet' | 'local';
+export type NetworkId = "testnet" | "futurenet" | "local";
 
 /** Static description of one selectable Stellar network (#1148). */
 export interface NetworkDescriptor {
@@ -105,22 +105,22 @@ export interface NetworkDescriptor {
 /** The networks {@link BcForgeProvider} offers by default (#1148). */
 export const STELLAR_NETWORKS: readonly NetworkDescriptor[] = [
   {
-    id: 'testnet',
-    label: 'Testnet',
-    networkPassphrase: 'Test SDF Network ; September 2015',
-    defaultRpcUrl: 'https://soroban-testnet.stellar.org',
+    id: "testnet",
+    label: "Testnet",
+    networkPassphrase: "Test SDF Network ; September 2015",
+    defaultRpcUrl: "https://soroban-testnet.stellar.org",
   },
   {
-    id: 'futurenet',
-    label: 'Futurenet',
-    networkPassphrase: 'Test SDF Future Network ; October 2022',
-    defaultRpcUrl: 'https://soroban-futurenet.stellar.org',
+    id: "futurenet",
+    label: "Futurenet",
+    networkPassphrase: "Test SDF Future Network ; October 2022",
+    defaultRpcUrl: "https://soroban-futurenet.stellar.org",
   },
   {
-    id: 'local',
-    label: 'Local standalone',
-    networkPassphrase: 'Local Sandbox Stellar Network ; September 2022',
-    defaultRpcUrl: 'http://localhost:8000',
+    id: "local",
+    label: "Local standalone",
+    networkPassphrase: "Local Sandbox Stellar Network ; September 2022",
+    defaultRpcUrl: "http://localhost:8000",
   },
 ];
 
@@ -135,7 +135,10 @@ function findNetworkByPassphrase(
   networks: readonly NetworkDescriptor[],
 ): NetworkDescriptor | null {
   if (passphrase === null) return null;
-  return networks.find((candidate) => candidate.networkPassphrase === passphrase) ?? null;
+  return (
+    networks.find((candidate) => candidate.networkPassphrase === passphrase) ??
+    null
+  );
 }
 
 /** Network selection state and actions exposed by {@link useNetwork} (#1148). */
@@ -173,7 +176,7 @@ const bcForgeContext = createContext<BcForgeContextType>({
   network: null,
   networkId: null,
   networks: STELLAR_NETWORKS,
-  rpcUrl: '',
+  rpcUrl: "",
   setNetwork: async () => {},
   isSwitching: false,
   switchError: null,
@@ -209,7 +212,9 @@ export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({
   contractIds,
   onNetworkChange,
 }) => {
-  const [selectedNetworkId, setSelectedNetworkId] = useState<NetworkId | null>(defaultNetwork ?? null);
+  const [selectedNetworkId, setSelectedNetworkId] = useState<NetworkId | null>(
+    defaultNetwork ?? null,
+  );
   const [switchingId, setSwitchingId] = useState<NetworkId | null>(null);
   const [switchError, setSwitchError] = useState<Error | null>(null);
 
@@ -222,25 +227,31 @@ export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({
   );
   const networkIndex = useMemo(
     () =>
-      new Map<NetworkId, NetworkDescriptor>(networks.map((entry) => [entry.id, entry] as const)),
+      new Map<NetworkId, NetworkDescriptor>(
+        networks.map((entry) => [entry.id, entry] as const),
+      ),
     [networks],
   );
 
   // `null` means "use the provider's own config verbatim": that is the state
   // every existing consumer is in until a network is explicitly selected.
   const selectedNetwork =
-    selectedNetworkId === null ? null : (networkIndex.get(selectedNetworkId) ?? null);
+    selectedNetworkId === null
+      ? null
+      : (networkIndex.get(selectedNetworkId) ?? null);
 
   const rpcUrl =
     selectedNetwork === null
       ? config.rpcUrl
       : (rpcUrls?.[selectedNetwork.id] ?? selectedNetwork.defaultRpcUrl);
   const passphrase =
-    selectedNetwork === null ? config.networkPassphrase : selectedNetwork.networkPassphrase;
+    selectedNetwork === null
+      ? config.networkPassphrase
+      : selectedNetwork.networkPassphrase;
   const contractId =
     selectedNetwork === null || contractIds === undefined
       ? config.contractId
-      : contractIds[selectedNetwork.id] ?? config.contractId;
+      : (contractIds[selectedNetwork.id] ?? config.contractId);
 
   // Only a selected network overrides the caller's config, and the override is a
   // new object whenever the effective values change, so `client` (and every
@@ -249,7 +260,10 @@ export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({
     if (selectedNetwork === null) return config;
     return { ...config, rpcUrl, networkPassphrase: passphrase, contractId };
   }, [config, selectedNetwork, rpcUrl, passphrase, contractId]);
-  const client = useMemo(() => new bcForgeClient(effectiveConfig), [effectiveConfig]);
+  const client = useMemo(
+    () => new bcForgeClient(effectiveConfig),
+    [effectiveConfig],
+  );
 
   // The vault follows the same network so vault reads hit the new endpoint.
   const effectiveVaultConfig = useMemo<VaultClientConfig | undefined>(() => {
@@ -299,9 +313,28 @@ export const BcForgeProvider: React.FC<BcForgeProviderProps> = ({
     () => ({
       client,
       vaultClient,
-      networkPassphrase: config.networkPassphrase,
+      // The effective passphrase, so WalletProvider validates the adapter
+      // against the network that is actually active.
+      networkPassphrase: passphrase,
+      network: selectedNetwork ?? findNetworkByPassphrase(passphrase, networks),
+      networkId: selectedNetwork?.id ?? null,
+      networks,
+      rpcUrl,
+      setNetwork,
+      isSwitching: switchingId !== null,
+      switchError,
     }),
-    [client, vaultClient, config.networkPassphrase],
+    [
+      client,
+      vaultClient,
+      passphrase,
+      selectedNetwork,
+      networks,
+      rpcUrl,
+      setNetwork,
+      switchingId,
+      switchError,
+    ],
   );
 
   return (
@@ -596,10 +629,12 @@ export async function signWithHardwareTimeout<T>(
 ): Promise<T> {
   const {
     isHardwareWallet = false,
-    timeoutMs = isHardwareWallet ? HARDWARE_SIGNATURE_TIMEOUT_MS : DEFAULT_SIGNATURE_TIMEOUT_MS,
+    timeoutMs = isHardwareWallet
+      ? HARDWARE_SIGNATURE_TIMEOUT_MS
+      : DEFAULT_SIGNATURE_TIMEOUT_MS,
     timeoutMessage = isHardwareWallet
-      ? 'Confirm on Ledger device timed out. Please ensure your device is connected, unlocked, and the Stellar app is open.'
-      : 'Signature request timed out.',
+      ? "Confirm on Ledger device timed out. Please ensure your device is connected, unlocked, and the Stellar app is open."
+      : "Signature request timed out.",
   } = options;
 
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -826,17 +861,21 @@ const WalletMachine: React.FC<WalletProviderProps> = ({
 
         let isHardwareWallet = false;
         try {
-          if (typeof (adapter as any)?.isHardwareWallet === 'boolean') {
+          if (typeof (adapter as any)?.isHardwareWallet === "boolean") {
             isHardwareWallet = (adapter as any).isHardwareWallet;
-          } else if (typeof (adapter as any)?.isHardwareWallet === 'function') {
-            isHardwareWallet = Boolean(await (adapter as any).isHardwareWallet());
-          } else if (wallet === 'freighter') {
+          } else if (typeof (adapter as any)?.isHardwareWallet === "function") {
+            isHardwareWallet = Boolean(
+              await (adapter as any).isHardwareWallet(),
+            );
+          } else if (wallet === "freighter") {
             const api = (globalThis as any).freighter;
-            if (typeof api?.isHardwareWallet === 'function') {
+            if (typeof api?.isHardwareWallet === "function") {
               isHardwareWallet = Boolean(await api.isHardwareWallet());
-            } else if (typeof api?.getUserInfo === 'function') {
+            } else if (typeof api?.getUserInfo === "function") {
               const info = await api.getUserInfo();
-              isHardwareWallet = Boolean(info?.isHardwareWallet || info?.hardwareWallet);
+              isHardwareWallet = Boolean(
+                info?.isHardwareWallet || info?.hardwareWallet,
+              );
             }
           }
         } catch {
@@ -1140,7 +1179,7 @@ export function useWallet(): WalletConnection {
 
   const isHardwareWallet = Boolean(
     (context.state.status === "connected" && context.state.isHardwareWallet) ||
-      (adapter as any)?.isHardwareWallet,
+    (adapter as any)?.isHardwareWallet,
   );
 
   const signWithTimeout = useCallback(
