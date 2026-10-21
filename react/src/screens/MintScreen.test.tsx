@@ -140,6 +140,53 @@ describe("MintScreen", () => {
     });
 
     expect(screen.getByRole("button", { name: /^mint$/i })).toBeDisabled();
+    expect(
+      screen.getByTestId("mint-amount-validation-error"),
+    ).toHaveTextContent(/greater than zero/i);
+  });
+
+  it("displays immediate red error banner and disables submit for decimals, negatives, and exponential notation (#1205)", async () => {
+    renderWithWallet(true);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("mint-connected-account")).toHaveTextContent(
+        "GBRP…YOXT",
+      );
+    });
+
+    const recipientInput = screen.getByPlaceholderText(/recipient/i);
+    const amountInput = screen.getByPlaceholderText(/positive integer amount/i);
+    const submit = screen.getByRole("button", { name: /^mint$/i });
+
+    fireEvent.change(recipientInput, { target: { value: RECIPIENT } });
+
+    // Negative number
+    fireEvent.change(amountInput, { target: { value: "-50" } });
+    expect(submit).toBeDisabled();
+    expect(
+      screen.getByTestId("mint-amount-validation-error"),
+    ).toHaveTextContent(/cannot be negative/i);
+
+    // Decimal number
+    fireEvent.change(amountInput, { target: { value: "12.34" } });
+    expect(submit).toBeDisabled();
+    expect(
+      screen.getByTestId("mint-amount-validation-error"),
+    ).toHaveTextContent(/cannot contain decimals/i);
+
+    // Exponential notation
+    fireEvent.change(amountInput, { target: { value: "1e5" } });
+    expect(submit).toBeDisabled();
+    expect(
+      screen.getByTestId("mint-amount-validation-error"),
+    ).toHaveTextContent(/cannot use exponential notation/i);
+
+    // Valid positive base-10 integer
+    fireEvent.change(amountInput, { target: { value: "500" } });
+    expect(submit).toBeEnabled();
+    expect(
+      screen.queryByTestId("mint-amount-validation-error"),
+    ).not.toBeInTheDocument();
   });
 
   it("calls mint exactly once on a valid submit and renders the tx hash", async () => {

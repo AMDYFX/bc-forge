@@ -29,6 +29,9 @@ const mockClient = {
   getLatestLedgerSequence: jest.fn(),
   estimateTransferFee: jest.fn(),
   accountExists: jest.fn(),
+  extendTtl: jest.fn(),
+  getVestingInfo: jest.fn(),
+  getTotalSupply: jest.fn(),
 };
 const mockVaultClient = {
   deposit: jest.fn(),
@@ -66,13 +69,17 @@ jest.mock("@bc-forge/sdk", () => {
 import {
   ZERO_ADDRESS,
   clearTokenMetadataCache,
+  clearBatchReadsCache,
+  calculateVestedAmount,
   isValidStellarAddress,
   normalizeHookError,
   stroopsToXlm,
   useAccountBalance,
   useAllowance,
   useApprove,
+  useBatchContractReads,
   useEstimateFee,
+  useExtendContractTtl,
   useHasRole,
   useLatestLedger,
   useProposalVote,
@@ -80,10 +87,11 @@ import {
   useRoleAdmins,
   useTokenAllowance,
   useTokenMetadata,
-  useTransfer,
-  useVaultDeposit,
   useTransactionSubmission,
   decodeTransactionError,
+  useTransfer,
+  useVaultDeposit,
+  useVestingSchedule,
 } from "./hooks";
 
 describe("React client hooks", () => {
@@ -350,7 +358,6 @@ describe("React client hooks", () => {
 
     expect(mockClient.approveProposal).not.toHaveBeenCalled();
   });
-
   describe("useHasRole (#1206)", () => {
     it("resolves the role check for an address", async () => {
       mockClient.hasRole.mockResolvedValue(true);
@@ -1331,6 +1338,206 @@ describe("React client hooks", () => {
 
       expect(result.current.data).toContain("GADMIN_RECOVERED");
       expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe("useExtendContractTtl (#1198)", () => {
+    it("submits extend_ttl transaction with connected admin wallet", async () => {
+      mockClient.extendTtl.mockResolvedValue({
+        success: true,
+        hash: "ttl-tx-hash",
+      });
+
+      const { result } = renderHook(() => useExtendContractTtl());
+
+      expect(result.current.loading).toBe(false);
+      expect(result.current.result).toBeNull();
+
+      let txResult;
+      await act(async () => {
+        txResult = await result.current.extendTtl({
+          thresholdLedgers: 25,
+          extendToLedgers: 120,
+        });
+      });
+
+      expect(mockClient.extendTtl).toHaveBeenCalledWith(25, 120, undefined);
+      expect(txResult).toEqual({ success: true, hash: "ttl-tx-hash" });
+      expect(result.current.result).toEqual({
+        success: true,
+        hash: "ttl-tx-hash",
+      });
+      expect(result.current.loading).toBe(false);
+      expect(result.current.error).toBeNull();
+    });
+
+    it("rejects when wallet is disconnected", async () => {
+      mockUseWallet.mockReturnValue({ status: "disconnected" });
+      const { result } = renderHook(() => useExtendContractTtl());
+
+      await act(async () => {
+        await expect(result.current.extendTtl()).rejects.toThrow(
+          'Cannot submit a transaction while wallet status is "disconnected".',
+        );
+      });
+
+      expect(mockClient.extendTtl).not.toHaveBeenCalled();
+      expect(result.current.error).toBeDefined();
+    });
+
+    it("surfaces errors when RPC invocation fails", async () => {
+      mockClient.extendTtl.mockRejectedValue(
+        new Error("RPC timeout during TTL bump"),
+      );
+      const { result } = renderHook(() => useExtendContractTtl());
+
+      await act(async () => {
+        await expect(result.current.extendTtl()).rejects.toThrow(
+          "RPC timeout during TTL bump",
+        );
+      });
+
+      expect(result.current.error?.message).toBe("RPC timeout during TTL bump");
+      expect(result.current.loading).toBe(false);
+      expect(result.current.result).toBeNull();
+
+      act(() => {
+        result.current.reset();
+      });
+      expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe("useVestingSchedule (#1200)", () => {
+    it("calculates vested amount accurately given start, cliff, end and current ledger", () => {
+      const total = 1000n;
+      // Before cliff (cliff at ledger 50)
+      expect(calculateVestedAmount(total, 0, 50, 100, 25)).toBe(0n);
+      // At cliff (50% elapsed)
+      expect(calculateVestedAmount(total, 0, 50, 100, 50)).toBe(500n);
+      // Halfway after cliff (75% elapsed)
+      expect(calculateVestedAmount(total, 0, 50, 100, 75)).toBe(750n);
+      // At or after end
+      expect(calculateVestedAmount(total, 0, 50, 100, 100)).toBe(1000n);
+      expect(calculateVestedAmount(total, 0, 50, 100, 120)).toBe(1000n);
+    });
+
+    it("queries vesting schedules and computes vested/claimable tokens", async () => {
+      mockClient.getLatestLedgerSequence.mockResolvedValue(60);
+      mockClient.getVestingInfo.mockResolvedValue([
+        {
+          schedule_id: 1n,
+          schedule: {
+            beneficiary: "GBENEFICIARY123",
+            total_amount: 1000n,
+            cliff_ledger: 20,
+            end_ledger: 100,
+            released_amount: 200n,
+            revocable: true,
+          },
+          start_ledger: 0,
+          claimable_amount: 400n,
+          revoked: false,
+        },
+      ]);
+
+      const { result } = renderHook(() =>
+        useVestingSchedule({
+          beneficiary: "GBENEFICIARY123",
+          currentLedger: 60,
+        }),
+      );
+
+      await waitFor(() => {
+        expect(result.current.data).not.toBeNull();
+      });
+
+      expect(result.current.data?.totalLocked).toBe(1000n);
+      expect(result.current.data?.cliffLedger).toBe(20);
+      expect(result.current.data?.endLedger).toBe(100);
+      expect(result.current.data?.vestedAmount).toBe(600n); // 60/100 * 1000 = 600n
+      expect(result.current.data?.claimableAmount).toBe(400n);
+      expect(result.current.schedules).toHaveLength(1);
+      expect(result.current.loading).toBe(false);
+      expect(result.current.error).toBeNull();
+    });
+
+    it("handles disconnected or empty beneficiary gracefully without errors", async () => {
+      const { result } = renderHook(() =>
+        useVestingSchedule({ beneficiary: undefined }),
+      );
+      expect(result.current.data).toBeNull();
+      expect(result.current.loading).toBe(false);
+      expect(result.current.error).toBeNull();
+    });
+  });
+
+  describe("useBatchContractReads (#1203)", () => {
+    beforeEach(() => {
+      clearBatchReadsCache();
+    });
+
+    it("combines balance, supply, and custom queries into a single batch with shared cache", async () => {
+      mockClient.getBalance.mockResolvedValue("1500000");
+      mockClient.getTotalSupply.mockResolvedValue(50000000n);
+
+      const customQuery = jest.fn().mockResolvedValue("custom-value");
+
+      const { result } = renderHook(() =>
+        useBatchContractReads({
+          balanceAddress:
+            "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT",
+          includeTotalSupply: true,
+          queries: { customKey: customQuery },
+        }),
+      );
+
+      await waitFor(() => {
+        expect(result.current.data).not.toBeNull();
+      });
+
+      expect(result.current.data?.balance).toBe("1500000");
+      expect(result.current.data?.totalSupply).toBe(50000000n);
+      expect(result.current.data?.customKey).toBe("custom-value");
+      expect(mockClient.getBalance).toHaveBeenCalledTimes(1);
+      expect(mockClient.getTotalSupply).toHaveBeenCalledTimes(1);
+      expect(customQuery).toHaveBeenCalledTimes(1);
+
+      // Verify cached read does not make redundant RPC calls
+      const secondHook = renderHook(() =>
+        useBatchContractReads({
+          balanceAddress:
+            "GBRPYHIL2CI3FNQ4BXLFMNDLFJUNPU2HY3ZMFTGWEBUSAVCBCY42YOXT",
+          includeTotalSupply: true,
+          queries: { customKey: customQuery },
+        }),
+      );
+
+      await waitFor(() => {
+        expect(secondHook.result.current.data).not.toBeNull();
+      });
+
+      expect(secondHook.result.current.data?.balance).toBe("1500000");
+      expect(mockClient.getBalance).toHaveBeenCalledTimes(1);
+      expect(mockClient.getTotalSupply).toHaveBeenCalledTimes(1);
+    });
+
+    it("handles query failures without unhandled crashes", async () => {
+      mockClient.getBalance.mockRejectedValue(new Error("RPC Network Timeout"));
+
+      const { result } = renderHook(() =>
+        useBatchContractReads({
+          balanceAddress: "GERRORADDRESS",
+        }),
+      );
+
+      await waitFor(() => {
+        expect(result.current.error).not.toBeNull();
+      });
+
+      expect(result.current.error?.message).toBe("RPC Network Timeout");
+      expect(result.current.loading).toBe(false);
+      expect(result.current.data).toBeNull();
     });
   });
 });

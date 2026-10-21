@@ -1811,6 +1811,55 @@ export class bcForgeClient {
     return this.invokeContract('update_symbol', [stringToScVal(newSymbol)], source);
   }
 
+  /**
+   * Extend contract instance and state TTL. Admin-only.
+   *
+   * @param thresholdLedgers - Ledgers remaining threshold to trigger bump (default: 20)
+   * @param extendToLedgers   - Number of ledgers to extend to (default: 100)
+   * @param source            - Optional Keypair signer
+   */
+  async extendTtl(
+    thresholdLedgers = 20,
+    extendToLedgers = 100,
+    source?: Keypair,
+  ): Promise<TransactionResult> {
+    return this.invokeContract(
+      'extend_ttl',
+      [
+        nativeToScVal(thresholdLedgers, { type: 'u32' }),
+        nativeToScVal(extendToLedgers, { type: 'u32' }),
+      ],
+      source,
+    );
+  }
+
+  /**
+   * Query vesting contract schedules for a beneficiary.
+   *
+   * @param beneficiary       - Beneficiary account address
+   * @param vestingContractId - Optional vesting contract ID override
+   */
+  async getVestingInfo(beneficiary: string, vestingContractId?: string): Promise<unknown> {
+    const targetContract = vestingContractId ? new Contract(vestingContractId) : this.contract;
+    const account = new (await import('@stellar/stellar-sdk')).Account(
+      'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+      '0',
+    );
+    const tx = new TransactionBuilder(account, {
+      fee: '100',
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(targetContract.call('get_vesting_info', addressToScVal(beneficiary)))
+      .setTimeout(30)
+      .build();
+
+    const simulated = await this.server.simulateTransaction(tx);
+    if (!SorobanRpc.Api.isSimulationSuccess(simulated) || !simulated.result) {
+      return [];
+    }
+    return scValToNative(simulated.result.retval);
+  }
+
   // ─── Internal Helpers ────────────────────────────────────────────────────
 
   /**

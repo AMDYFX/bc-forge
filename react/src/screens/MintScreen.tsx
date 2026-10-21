@@ -36,10 +36,26 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
   const recipientValid = trimmedRecipient.length > 0;
   const amountValid = isPositiveInteger(trimmedAmount);
   const lacksMinterRole = connected && isMinter === false;
+
+  // Immediate validation for non-integer, negative, decimal, or exponential input (#1205)
+  const amountValidationError = React.useMemo(() => {
+    if (!amount) return null;
+    const trimmed = amount.trim();
+    if (trimmed === "") return "Amount cannot be blank.";
+    if (trimmed.includes("-")) return "Amount cannot be negative.";
+    if (trimmed.includes(".")) return "Amount cannot contain decimals.";
+    if (/e/i.test(trimmed)) return "Amount cannot use exponential notation.";
+    if (!/^\d+$/.test(trimmed))
+      return "Amount must be a valid base-10 integer.";
+    if (BigInt(trimmed) === 0n) return "Amount must be greater than zero.";
+    return null;
+  }, [amount]);
+
   const canSubmit =
     connected &&
     recipientValid &&
     amountValid &&
+    !amountValidationError &&
     !loading &&
     !roleLoading &&
     !lacksMinterRole;
@@ -61,8 +77,8 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
       setError("Recipient address is required.");
       return;
     }
-    if (!amountValid) {
-      setError("Amount must be a positive integer.");
+    if (!amountValid || amountValidationError) {
+      setError(amountValidationError || "Amount must be a positive integer.");
       return;
     }
 
@@ -124,6 +140,16 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
         >
           The connected account does not hold the Minter role, so minting is
           disabled.
+        </Alert>
+      )}
+
+      {amountValidationError && (
+        <Alert
+          variant="danger"
+          title="Validation Error"
+          data-testid="mint-amount-validation-error"
+        >
+          {amountValidationError}
         </Alert>
       )}
 
@@ -200,7 +226,9 @@ export const MintScreen: React.FC<MintScreenProps> = ({ style, className }) => {
             disabled={loading}
             style={{
               padding: "8px 12px",
-              border: "1px solid #d1d5db",
+              border: amountValidationError
+                ? "1px solid #ef4444"
+                : "1px solid #d1d5db",
               borderRadius: "6px",
               fontSize: "14px",
               outline: "none",
