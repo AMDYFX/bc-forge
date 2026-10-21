@@ -5,9 +5,6 @@ export type { AlertProps, AlertVariant } from "./Alert";
 export { Badge } from "./Badge";
 export type { BadgeProps, BadgeVariant, BadgeSize } from "./Badge";
 
-export { Modal } from "./Modal";
-export type { ModalProps, ModalSize } from "./Modal";
-
 export { ConfirmationDialog } from "./ConfirmationDialog";
 export type {
   ConfirmationDialogProps,
@@ -64,6 +61,9 @@ export {
 
 export { ConnectWallet } from "./ConnectWallet";
 export type { ConnectWalletProps } from "./ConnectWallet";
+
+export { WalletSelectModal, WALLET_INSTALL_LABELS } from "./WalletSelectModal";
+export type { WalletSelectModalProps } from "./WalletSelectModal";
 
 export { TokenCard } from "./TokenCard";
 export type { TokenCardProps } from "./TokenCard";
