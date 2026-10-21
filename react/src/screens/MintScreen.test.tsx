@@ -12,7 +12,7 @@ const mockMint = jest.fn();
 const mockHasRole = jest.fn();
 
 jest.mock("@bc-forge/sdk", () => ({
-  Role: { Minter: "Minter" },
+  Role: { Minter: "Minter", SuperAdmin: "SuperAdmin" },
   bcForgeClient: jest.fn().mockImplementation(() => ({
     mint: (...args: unknown[]) => mockMint(...args),
     hasRole: (...args: unknown[]) => mockHasRole(...args),
@@ -242,6 +242,25 @@ describe("MintScreen", () => {
       expect(mockMint).toHaveBeenCalledTimes(1);
     });
     expect(await screen.findByRole("alert")).toHaveTextContent("DEADBEEF");
+  });
+
+  it("renders caller minter role indicator and field helper text", async () => {
+    renderWithWallet(true);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("minter-role-indicator")).toBeInTheDocument();
+    });
+
+    expect(
+      screen.getByText(
+        /The public Stellar account \(G\.\.\. or C\.\.\. identifier\) that will receive newly minted tokens\./i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        /Specify the token quantity in base units \(must be a positive whole integer without decimals\)\./i,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows a Minter role warning and disables submit for non-minters", async () => {

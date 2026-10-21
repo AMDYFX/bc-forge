@@ -216,6 +216,17 @@ export class MockBcForgeClient {
     this.accounts[owner].allowances[spender] -= amount;
     return { success: true, hash: 'mock-hash', returnValue: null };
   }
+
+  async getFlashLoanLockStatus(
+    _address: string,
+    _guardContractId?: string,
+  ): Promise<{ isLocked: boolean; depositBlock: number | null; currentLedger: number }> {
+    return { isLocked: false, depositBlock: null, currentLedger: 100 };
+  }
+
+  async getSplitInvoice(_invoiceId: number | bigint, _splitContractId?: string): Promise<any> {
+    return null;
+  }
 }
 
 export class MockVaultClient {
